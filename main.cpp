@@ -70,7 +70,7 @@ std::string meshUnitCube(const int n) {
 //  gmsh::model::mesh::refine();
   synchronize();
   std::vector<std::pair<int, int> > extrusion;
-  const std::vector<int> & numElements {1};
+  const std::vector<int> & numElements {n};
   const std::vector<double> & heights {1};
   extrude({std::pair<int,int>{2, squareSurfaces[0]}}, 0, 0, 1, extrusion, numElements, heights, true);
   for(auto ex : extrusion){
@@ -211,16 +211,21 @@ std::vector<size_t> getLocalParallelEdge(size_t edgeIndex){
   return result;
 }
 
-void orientEdges(const size_t globalEdgeIndex,
-                 const size_t localEdgeIndex,
-                 const size_t hexIndex,
-                 const int desiredOrientation,
-                 const std::vector<std::vector<size_t>> &edge2hex,
-                 const std::vector<std::array<size_t, 12>> &hex2edge,
-                 const std::vector<Edge> &edge2node,
-                 std::vector<int> &globalOrientation,
-                 std::vector<std::array<int, 12>> &localOrientation
-                 ){
+int localEdgeDirection(size_t edgeIndex){
+  //only two cases when low to high pointing doesn't give parallel edges
+  if (edgeIndex == 2 || edgeIndex == 6){
+    return -1;
+  }
+  else{
+    return 1;
+  }
+}
+
+void orientEdges(const size_t globalEdgeIndex, const size_t localEdgeIndex, const size_t hexIndex,
+                 const int desiredOrientation, const std::vector<std::vector<size_t>> &edge2hex,
+                 const std::vector<std::array<size_t, 12>> &hex2edge, const std::vector<Edge> &edge2node,
+                 const std::vector<std::array<size_t, 8>> &hex2node,
+                 std::vector<int> &globalOrientation, std::vector<std::array<int, 12>> &localOrientation) {
   const auto globalOri = globalOrientation[globalEdgeIndex];
   const auto localOri = localOrientation[hexIndex][localEdgeIndex];
   //std::cout << "edge=(" << edge2node[globalEdgeIndex][0] << "," << edge2node[globalEdgeIndex][1]
@@ -231,12 +236,17 @@ void orientEdges(const size_t globalEdgeIndex,
     return;
   //Globally oriented but not locally oriented. This is the case when jumping across hexahedra.
   else if(globalOri != 0 && localOri == 0){
+    const auto [localNode0, localNode1] = edgeIndexToNodeIndex(localEdgeIndex);
+    std::array<size_t, 2> globalEdgeNodes = {hex2node[hexIndex][localNode0], hex2node[hexIndex][localNode1]};
     //check global orientation against local
-    const auto [globalNode0, globalNode1] = edge2node[globalEdgeIndex];
+//    const auto [globalNode0, globalNode1] = edge2node[globalEdgeIndex];
     //if the local orientation were positive, this is the relative orientation.
-    int initialRelativeSigma = (globalNode0 < globalNode1) ? 1 : -1;
+//    int initialRelativeSigma = (globalNode0 < globalNode1) ? 1 : -1;
+    //if the local orientation aligned with the global, this is the relative orientation.
+    int initialLocalSigma = localEdgeDirection(localEdgeIndex);
+    int initialRelativeSigma = (globalEdgeNodes[0] < globalEdgeNodes[1]) ? 1 : -1;
     //correct this by the global ori found in previous hex
-    int relativeSigma = globalOri * initialRelativeSigma;
+    int relativeSigma = initialLocalSigma * globalOri * initialRelativeSigma;
     newDesiredOrientation = relativeSigma;
     //make local edge point in same direction as global edge.
     localOrientation[hexIndex][localEdgeIndex] = newDesiredOrientation;
@@ -246,11 +256,17 @@ void orientEdges(const size_t globalEdgeIndex,
     //set local orientation to desired orientation
     localOrientation[hexIndex][localEdgeIndex] = desiredOrientation;
     //check global orientation against local
-    const auto [globalNode0, globalNode1] = edge2node[globalEdgeIndex];
-    //if the local orientation were positive, this is the relative orientation.
-    int initialRelativeSigma = (globalNode0 < globalNode1) ? 1 : -1;
-    //then correct by the desiredOrientation
-    int relativeSigma = desiredOrientation * initialRelativeSigma;
+    //const auto [globalNode0, globalNode1] = edge2node[globalEdgeIndex];
+    const auto [localNode0, localNode1] = edgeIndexToNodeIndex(localEdgeIndex);
+
+    std::array<size_t, 2> globalEdgeNodes = {hex2node[hexIndex][localNode0], hex2node[hexIndex][localNode1]};
+    std::cout <<  localNode0 << "," << localNode1 << ": ";
+    std::cout <<  globalEdgeNodes[0]-1 << "," << globalEdgeNodes[1]-1 << "\n";
+    int initialLocalSigma = localEdgeDirection(localEdgeIndex);
+    //if the local orientation were positive and low to high local index, this is the relative orientation.
+    int initialRelativeSigma = (globalEdgeNodes[0] < globalEdgeNodes[1]) ? 1 : -1;
+    //then correct by the desiredOrientation and the local
+    int relativeSigma = initialLocalSigma * desiredOrientation * initialRelativeSigma;
     //if relative sigma is positive, then the local orientation and global agree
     globalOrientation[globalEdgeIndex] = relativeSigma;
     newDesiredOrientation = desiredOrientation;
@@ -267,13 +283,14 @@ void orientEdges(const size_t globalEdgeIndex,
       }
     }
     orientEdges(globalEdgeIndex, newLocalEdgeIndex, h, newDesiredOrientation, edge2hex, hex2edge,
-                edge2node, globalOrientation, localOrientation);
+                edge2node, hex2node, globalOrientation, localOrientation);
   }
+  //orient edges within hexahedron
   std::vector<size_t> localParallelEdges = getLocalParallelEdge(localEdgeIndex);
   for(auto p : localParallelEdges){
     size_t newGlobalEdgeIndex = hex2edge[hexIndex][p];
     orientEdges(newGlobalEdgeIndex, p, hexIndex, newDesiredOrientation, edge2hex, hex2edge,
-                edge2node, globalOrientation, localOrientation);
+                edge2node, hex2node, globalOrientation, localOrientation);
   }
 }
 
@@ -285,35 +302,41 @@ void orientEdges(const size_t globalEdgeIndex,
  * that edge.
  */
 std::array<int, 6> edgesStemmingFromNode(const size_t i){
-  std::array<int, 6> edgeDirs;
   switch (i) {
-    case 0: return {0, 3, 8,
-                    1, 1, 1};
-    case 1: return {0, 1, 9,
-                    -1, 1, 1};
-    case 2: return {1, 2, 10,
-                    -1, 1, 1};
-    case 3: return {2, 3, 11,
-                    -1, -1, 1};
-    case 4: return {4, 7, 8,
-                    1, 1, -1};
-    case 5: return {4, 5, 9,
-                    -1, 1, -1};
-    case 6: return {5, 6, 10,
-                    -1, 1, -1};
-    case 7: return {6, 7, 11,
-                    -1, -1, -1};
-    //invalid node request
-    std::cout << "Error in edgeStemmingFromNode(i): Function needs i in [0,12)." << std::endl;
-    return {-1, -1, -1,
-            -1, -1, -1};
+    case 0:
+      return {0, 3, 8,
+              1, 1, 1};
+    case 1:
+      return {0, 1, 9,
+              -1, 1, 1};
+    case 2:
+      return {1, 2, 10,
+              -1, 1, 1};
+    case 3:
+      return {2, 3, 11,
+              -1, -1, 1};
+    case 4:
+      return {4, 7, 8,
+              1, 1, -1};
+    case 5:
+      return {4, 5, 9,
+              -1, 1, -1};
+    case 6:
+      return {5, 6, 10,
+              -1, 1, -1};
+    case 7:
+      return {6, 7, 11,
+              -1, -1, -1};
+    default:
+      std::cout << "Error in edgeStemmingFromNode(i): Function needs i in [0,12)." << std::endl;
+      return {-1, -1, -1, -1, -1, -1};
   }
 }
 
 int main() {
   namespace mesh = gmsh::model::mesh;
   namespace geo = gmsh::model::geo;
-  auto fileName = meshUnitCube(2);
+  auto fileName = meshUnitCube(3);
   gmsh::initialize();
   gmsh::open(fileName);
   std::vector<int> elementTypes;
@@ -382,11 +405,12 @@ int main() {
     std::array<size_t,12> myEdges = hex2edge[i];
     for(auto j = 0; j < 12; ++j){
       size_t myGlobalEdge = myEdges[j];
-      orientEdges(myGlobalEdge, j, i, 1, edge2hex, hex2edge, edge2node, globalOrientation, localOrientation);
+      orientEdges(myGlobalEdge, j, i, 1, edge2hex, hex2edge, edge2node, hex2node, globalOrientation,
+                  localOrientation);
     }
   }
 
-  //orientEdges(0,0,0,1,edge2hex,hex2edge,edge2node,globalOrientation,localOrientation);
+//  orientEdges(0,0,0,1,edge2hex,hex2edge,edge2node,hex2node,globalOrientation,localOrientation);
   for(auto i = 0; i < numEdges; ++i){
     const auto myNode = edge2node[i];
     if(globalOrientation[i] != 0){
@@ -431,19 +455,56 @@ int main() {
   }
   f.close();
 
-//  std::cout << "edge index=" << edgeIndex << ", edge2node_size=" << edge2node.size()
-//            << ", edgeMap_size=" << edgeMap.size() << ", edge2hex_size" << edge2hex.size() << '\n';
+  std::vector<size_t> localOriginIndex(numHex);
+  for(auto hexIndex =0; hexIndex < numHex; ++hexIndex){
+    //loop over each node searching for origin
+    for(auto i = 0; i < 8; ++i){
+      const std::array<int, 6> edgeStemmingFromNode = edgesStemmingFromNode(i);
+      size_t originIndex;
+      bool isOrigin = true;
+      //we know the three edges and their direction stemming from each node
+      std::cout << "i="<< i << " (";
+      for(auto j = 0; j < 3; ++j){
+        auto myLocalEdge = edgeStemmingFromNode[j];
+        auto myDefaultDir = edgeStemmingFromNode[j+3];
+        int myLocalOrientation = localOrientation[hexIndex][myLocalEdge];
+        //int myTrueDir = myDefaultDir * localOrientation[hexIndex][myLocalEdge];
+        //int myTrueDir = myEdgeGlobalOri * myDefaultDir * myLocalOrientation;
+        int myTrueDir = myDefaultDir * myLocalOrientation * localEdgeDirection(myLocalEdge);
+        std::cout << myTrueDir << ',';
+        //std::cout << myLocalEdge << ',';
+        isOrigin = isOrigin && (myTrueDir == 1); //if myTrueDir != 1 this is chain is false, it is not the origin
+      }
+      std::cout << ") ";
+      if(isOrigin){
+        originIndex = i;
+        localOriginIndex[hexIndex] = originIndex;
+        //localOriginIndex[hexIndex] = 0;
+        //break;
+      }
+    }
+    std::cout << "\n";
+  }
 
-//  for(int i = 0; i < hex2edge.size(); ++i){
-//    const auto eds = hex2edge[i];
-//    std::cout << myTags[i]-9 << " " << std::endl;
-//    for(auto j = 0; j < 12; ++j){
-//      auto globalEdgeIndex = eds[j];
-//      auto nodes = edge2node[globalEdgeIndex];
-//      std::cout << "(" << nodes[0]-1 << "," << nodes[1]-1 << ") ";
-//    }
-//    std::cout << std::endl;
-//  }
+  //plot origins of each
+  //std::ofstream f;
+  f.open("Origins.vtk");
+  f << "# vtk DataFile Version 3.0" << '\n';
+  f << "vtk output\n";
+  f << "ASCII" << '\n';
+  f << "DATASET UNSTRUCTURED_GRID" << '\n';
+  f << "POINTS " << numHex << " double\n";
+  for(auto hexIndex = 0; hexIndex < numHex; ++hexIndex){
+    auto myHexGlobalNodes = hex2node[hexIndex];
+    auto myLocalIndex = localOriginIndex[hexIndex];
+    auto myGlobalNode = myHexGlobalNodes[myLocalIndex];
+    std::vector<double> coord;
+    std::vector<double> paraCoord;
+    int dim, tag;
+    gmsh::model::mesh::getNode(myGlobalNode, coord, paraCoord, dim, tag);
+    f << coord[0] << " " << coord[1] << " " << coord[2] << '\n';
+  }
+  f.close();
 
   return 0;
 }
