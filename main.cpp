@@ -73,9 +73,10 @@ std::string meshUnitCube(const int n) {
   const std::vector<int> & numElements {n};
   const std::vector<double> & heights {1};
   extrude({std::pair<int,int>{2, squareSurfaces[0]}}, 0, 0, 1, extrusion, numElements, heights, true);
-  for(auto ex : extrusion){
-    std::cout << "my extrusion " << ex.first << ',' << ex.second << '\n';
-  }
+//  extrude({std::pair<int,int>{2, squareSurfaces[0]}}, 0, 0, 1, extrusion);
+//  for(auto ex : extrusion){
+//    std::cout << "my extrusion " << ex.first << ',' << ex.second << '\n';
+//  }
 
 //  for(auto [myDim, myTag] : extrusion){
 //    if(myDim == 1) mesh::setTransfiniteCurve(myTag, dx);
@@ -221,6 +222,36 @@ int localEdgeDirection(size_t edgeIndex){
   }
 }
 
+/*
+ * Function to rearrange hex nodes given the index of the new desired origin
+ * For example, if we want the new origin to be 5, the reordering is
+ * {5, 4,
+ */
+std::array<size_t, 8> rearrangeNodes(size_t originIndex){
+  switch(originIndex){
+    case 0:
+      return {0, 1, 2, 3, 4, 5, 6, 7};
+    case 1:
+      return {1, 5, 6, 2, 0, 4, 7, 3};
+    case 2:
+      return {2, 3, 0, 1, 6, 7, 4, 5};
+    case 3:
+      return {3, 7, 4, 0, 2, 6, 5, 1};
+    case 4:
+      return {4, 0, 3, 7, 5, 1, 2, 6};
+    case 5:
+      return {5, 4, 7, 6, 1, 0, 3, 2};
+    case 6:
+      return {6, 7, 3, 2, 5, 4, 0, 1};
+    case 7:
+      //return {7, 3, 2, 6, 4, 0, 1, 5};
+      return {7, 6, 5, 4, 3, 2, 1, 0};
+    default:
+      std::cout << "Invalid value in rearrangeNodes()" << std::endl;
+      return {0, 1, 2, 3, 4, 5, 6, 7};
+  }
+}
+
 void orientEdges(const size_t globalEdgeIndex, const size_t localEdgeIndex, const size_t hexIndex,
                  const int desiredOrientation, const std::vector<std::vector<size_t>> &edge2hex,
                  const std::vector<std::array<size_t, 12>> &hex2edge, const std::vector<Edge> &edge2node,
@@ -260,8 +291,8 @@ void orientEdges(const size_t globalEdgeIndex, const size_t localEdgeIndex, cons
     const auto [localNode0, localNode1] = edgeIndexToNodeIndex(localEdgeIndex);
 
     std::array<size_t, 2> globalEdgeNodes = {hex2node[hexIndex][localNode0], hex2node[hexIndex][localNode1]};
-    std::cout <<  localNode0 << "," << localNode1 << ": ";
-    std::cout <<  globalEdgeNodes[0]-1 << "," << globalEdgeNodes[1]-1 << "\n";
+//    std::cout <<  localNode0 << "," << localNode1 << ": ";
+//    std::cout <<  globalEdgeNodes[0]-1 << "," << globalEdgeNodes[1]-1 << "\n";
     int initialLocalSigma = localEdgeDirection(localEdgeIndex);
     //if the local orientation were positive and low to high local index, this is the relative orientation.
     int initialRelativeSigma = (globalEdgeNodes[0] < globalEdgeNodes[1]) ? 1 : -1;
@@ -336,7 +367,7 @@ std::array<int, 6> edgesStemmingFromNode(const size_t i){
 int main() {
   namespace mesh = gmsh::model::mesh;
   namespace geo = gmsh::model::geo;
-  auto fileName = meshUnitCube(3);
+  auto fileName = meshUnitCube(1);
   gmsh::initialize();
   gmsh::open(fileName);
   std::vector<int> elementTypes;
@@ -401,6 +432,7 @@ int main() {
   zeros.fill(0);
   std::vector<std::array<int, 12>> localOrientation(numHex, zeros);
   std::vector<int> globalOrientation(numEdges, 0);
+  orientEdges(10,1,2,-1,edge2hex,hex2edge,edge2node,hex2node,globalOrientation,localOrientation);
   for(auto i =0; i< numHex; ++i){
     std::array<size_t,12> myEdges = hex2edge[i];
     for(auto j = 0; j < 12; ++j){
@@ -410,7 +442,6 @@ int main() {
     }
   }
 
-//  orientEdges(0,0,0,1,edge2hex,hex2edge,edge2node,hex2node,globalOrientation,localOrientation);
   for(auto i = 0; i < numEdges; ++i){
     const auto myNode = edge2node[i];
     if(globalOrientation[i] != 0){
@@ -463,7 +494,6 @@ int main() {
       size_t originIndex;
       bool isOrigin = true;
       //we know the three edges and their direction stemming from each node
-      std::cout << "i="<< i << " (";
       for(auto j = 0; j < 3; ++j){
         auto myLocalEdge = edgeStemmingFromNode[j];
         auto myDefaultDir = edgeStemmingFromNode[j+3];
@@ -471,11 +501,8 @@ int main() {
         //int myTrueDir = myDefaultDir * localOrientation[hexIndex][myLocalEdge];
         //int myTrueDir = myEdgeGlobalOri * myDefaultDir * myLocalOrientation;
         int myTrueDir = myDefaultDir * myLocalOrientation * localEdgeDirection(myLocalEdge);
-        std::cout << myTrueDir << ',';
-        //std::cout << myLocalEdge << ',';
         isOrigin = isOrigin && (myTrueDir == 1); //if myTrueDir != 1 this is chain is false, it is not the origin
       }
-      std::cout << ") ";
       if(isOrigin){
         originIndex = i;
         localOriginIndex[hexIndex] = originIndex;
@@ -483,10 +510,9 @@ int main() {
         //break;
       }
     }
-    std::cout << "\n";
   }
 
-  //plot origins of each
+  //plot origins of each hex
   //std::ofstream f;
   f.open("Origins.vtk");
   f << "# vtk DataFile Version 3.0" << '\n';
@@ -506,6 +532,36 @@ int main() {
   }
   f.close();
 
+  //Create new Hex to node vector that has the order of global nodes arranged to match the unit square
+  //i.e. change ordering to match consistent orientation.
+  std::vector<Hex> hex2nodeOriented(numHex, Hex{0, 0, 0, 0, 0, 0, 0, 0});
+  for(auto h = 0; h < numHex; ++h){
+    const auto &myHex = hex2node[h];
+    const auto originIndex = localOriginIndex[h];
+    auto rearrangedIndices = rearrangeNodes(originIndex);
+    for(auto nodeIndex = 0; nodeIndex < 8; ++nodeIndex){
+      auto newNodeIndex = rearrangedIndices[nodeIndex];
+      auto newGlobalNodeIndex = hex2node[h][newNodeIndex];
+      hex2nodeOriented[h][nodeIndex] = newGlobalNodeIndex; //moves global index to correct place to orient it.
+    }
+  }
+  //Comparing adjustments of hex to node with visit visualization.
+  for(auto h = 0; h < numHex; ++h){
+    auto myNodes = hex2nodeOriented[h];
+    auto myNodesOriginal = hex2node[h];
+    int myOrigin = hex2node[h][localOriginIndex[h]];
+    std::cout << "hexOrigin=" << myOrigin -1 <<   std::endl;
+    for(int i = 0; i < 8; ++i){
+      int ind = myNodes[i];
+      std::cout << ind - 1 << ",";
+    }
+    std::cout << "\n";
+    for(int i = 0; i < 8; ++i){
+      int ind = myNodesOriginal[i];
+      std::cout << ind - 1 << ",";
+    }
+    std::cout << "\n";
+  }
   return 0;
 }
 
