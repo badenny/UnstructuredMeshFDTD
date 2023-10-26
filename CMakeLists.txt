@@ -4,6 +4,8 @@ project(UnstructuredMeshFDTD)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_COMPILER "clang++")
 set(CMAKE_CXX_FLAGS_RELEASE "-O3 -v -stdlib=libc++ -std=c++20")
+#set(CMAKE_CXX_COMPILER "g++")
+#set(CMAKE_CXX_FLAGS_RELEASE "-O3 -v -stdlib=libstdc++ -std=c++20")
 set(CMAKE_BUILD_TYPE Release)
 
 add_executable(UnstructuredMeshFDTD main.cpp EdgeHash.h)
