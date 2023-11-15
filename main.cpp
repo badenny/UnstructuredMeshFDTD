@@ -103,7 +103,7 @@ std::string meshUnitCube(const int n) {
   gmsh::model::mesh::recombine();
   gmsh::model::mesh::generate(3);
 //  gmsh::option::setNumber("Mesh.SubdivisionAlgorithm", 2); //use 1 to force quads, use 2 to force hexahedra
-  size_t numSubDivs = 2;
+  size_t numSubDivs = 0;
   for(auto s = 0; s < numSubDivs; ++s){
     synchronize();
     gmsh::model::mesh::refine();
@@ -148,9 +148,16 @@ std::string meshUnitSquare(const int n, const double sideLength) {
 //    if(i==2) mesh::setTransfiniteCurve(line, n+1, "Linear", -scale);
   }
   geoLines.push_back(addLine(geoPoints[3], geoPoints[0]));
+  int diag = addLine(geoPoints[0], geoPoints[2]);
   auto loop = addCurveLoop(geoLines);
   auto surface = addPlaneSurface(std::vector<int>{loop});
+  synchronize();
+  std::vector<int> diagAsVector {diag};
+  gmsh::model::mesh::embed(1, diagAsVector, 2, surface);
+  synchronize();
+
   mesh::setTransfiniteSurface(surface);
+
   //gmsh::option::setNumber("Mesh.Algorithm", 9);
   //gmsh::option::setNumber("Mesh.Smoothing", 10);
   //const double phi = 10. * M_PI / 180.;
@@ -164,7 +171,7 @@ std::string meshUnitSquare(const int n, const double sideLength) {
   gmsh::model::mesh::recombine();
   synchronize();
   std::vector<std::pair<int, int> > extrusion;
-  const std::vector<int> & numElements {n};
+  const std::vector<int> & numElements {n+5};
 //  const std::vector<int> & numElements {n+5};
   const std::vector<double> & heights {1};
   extrude({std::pair<int,int>{2, surface}}, 0, 0, 1, extrusion, numElements, heights, true);
@@ -454,6 +461,13 @@ public:
     }
     return normal;
   }
+  Eigen::Vector3d physicalFaceAreaWeighted(size_t faceIndex){
+    Eigen::Matrix3d jac = faceJacobian(faceIndex);
+    return jac.transpose().inverse() * faceNormal(faceIndex) * jac.determinant();
+  }
+  double physicalFaceArea(size_t faceIndex){
+    return physicalFaceAreaWeighted(faceIndex).norm();
+  }
   /*
    * Inputs: edgeIndex - local edge index in hex
    * Returns the local coordinates of an edge in the unit square given a local edge index
@@ -490,6 +504,11 @@ public:
         return {0, 0, 0};
     }
   }
+
+  Eigen::Vector3d edgePhysicalCoord(size_t edgeIndex){
+    return mapToHex(edgeCoord(edgeIndex));
+  }
+
   Eigen::Vector3d dualFaceCoord(const size_t edgeIndex) {
     switch (edgeIndex) {
       case (0):
@@ -538,6 +557,26 @@ public:
     }
   }
 
+  std::array<Eigen::Vector3d,2> edgeNormals(size_t edgeIndex){
+    bool isX = (edgeIndex == 8 || edgeIndex == 9 || edgeIndex == 10 ||edgeIndex == 11);
+    bool isY = (edgeIndex == 0 || edgeIndex == 2 || edgeIndex == 4 ||edgeIndex == 6);
+    bool isZ = (edgeIndex == 1 || edgeIndex == 3 || edgeIndex == 5 ||edgeIndex == 7);
+    Eigen::Vector3d x {1,0,0};
+    Eigen::Vector3d y {0,1,0};
+    Eigen::Vector3d z {0,0,1};
+    if(isX)
+      return {y,z};
+    else if(isY)
+      return {z,x};
+    else if(isZ)
+      return {x,y};
+    else{
+      std::cout << "Bad index in edgeNormals()" << std::endl;
+      return {x, x};
+    }
+
+  };
+
   int edgeTangentialAsIndex(const size_t edgeIndex){
     bool isX = (edgeIndex == 8 || edgeIndex == 9 || edgeIndex == 10 ||edgeIndex == 11);
     bool isY = (edgeIndex == 0 || edgeIndex == 2 || edgeIndex == 4 ||edgeIndex == 6);
@@ -564,7 +603,7 @@ public:
 //    return static_cast<size_t>(oppositeIndex);
   }
 
-  double getDAtCirculationLocation(const size_t faceIndex){
+  double getDAtCirculationLocation(const int faceIndex){
     int oppFace = getOppositeFace(faceIndex);
     return 0.75 * mD[faceIndex] + 0.25 * mD[oppFace];
   }
@@ -579,6 +618,11 @@ public:
   Eigen::Matrix3d getMuCompInv(size_t edgeIndex){
     auto myEdgeCoord = edgeCoord(edgeIndex);
     auto jac = jacobian(myEdgeCoord);
+    auto muInv = jac.transpose() * mMuPhysical.inverse() * jac / jac.determinant();
+    return muInv;
+  }
+  Eigen::Matrix3d getMuCompInvAtCenter(){
+    auto jac = jacobian({.5,.5,.5});
     auto muInv = jac.transpose() * mMuPhysical.inverse() * jac / jac.determinant();
     return muInv;
   }
@@ -893,6 +937,61 @@ std::vector<size_t> getLocalParallelEdge(size_t edgeIndex){
   return result;
 }
 
+//std::vector<size_t> localParallelEdgeCounterClockwise(size_t edgeIndex){
+//  std::vector<size_t> result;
+//  if(!(0 <= edgeIndex && edgeIndex < 12)){
+//    std::cout << "Edge index passed in get getLocalParallelEdge needs to be in [0, 12)." << std::endl;
+//    return result;
+//  }
+//  std::vector<std::vector<size_t>> parallelEdges = {{0, 2, 6, 4},
+//                                                    {1, 3, 7, 5},
+//                                                    {8, 9, 10, 11}};
+//  //loop over sets of parallel edges and find set that contains edgeIndex
+//  for(auto pEdges : parallelEdges){
+//    auto it = std::find(pEdges.begin(), pEdges.end(), edgeIndex);
+//    //if the set pEdges contains edgeIndex, remove current index and set result to the remaining three edges
+//    if(it != std::end(pEdges)){
+//      std::rotate(pEdges.begin(), it, pEdges.end());
+//      result = pEdges;
+//      break;
+//    }
+//  }
+//  return result;
+//}
+
+std::array<size_t, 4> localParallelEdgeCounterClockwise(size_t edgeIndex){
+  switch(edgeIndex) {
+    case 0:
+      return {0, 2, 6, 4};
+    case 1:
+      return {1, 3, 7, 5};
+    case 2:
+      return {2, 6, 4, 0};
+    case 3:
+      return {3, 7, 5, 1};
+    case 4:
+      return {4, 0, 2, 6};
+    case 5:
+      return {5, 1, 3, 7};
+    case 6:
+      return {6, 4, 0, 2};
+    case 7:
+      return {7, 5, 1, 3};
+    case 8:
+      return {8, 9, 10, 11};
+    case 9:
+      return {9, 10, 11, 8};
+    case 10:
+      return {10, 11, 8, 9};
+    case 11:
+      return {11, 8, 9, 10};
+    default:
+      std::cout << "Edge index passed in get getLocalParallelEdgeCounterClockwise needs to be in [0, 12)."
+                << std::endl;
+      return {0,0,0,0};
+  }
+}
+
 int localEdgeDirection(size_t edgeIndex){
   //only two cases when low to high pointing doesn't give parallel edges
   if (edgeIndex == 2 || edgeIndex == 6){
@@ -1075,7 +1174,7 @@ std::array<size_t, 4> edgesAdjacentToEdge(size_t edgeIndex) {
     case 6:
       return {5,7,10,11};
     case 7:
-      return {5,6,8,11};
+      return {4,6,8,11};
     case 8:
       return {0,3,4,7};
     case 9:
@@ -1444,7 +1543,7 @@ void plotHexBHFields(std::vector<double> &nodeCoords, std::vector<UnitEdge> &edg
 //    auto [eVec, dVec] = physicalEandDAtCenter(myCube);
     auto [hVec, bVec] = physicalHandBAtCenter(myCube, edges);
 //    fVtk << hVec.transpose() << '\n';
-    fVtk << bVec.transpose() << '\n';
+    fVtk << hVec.transpose() << '\n';
 //    std::cout << bVec.transpose() << "\n\n";
   }
   fVtk.close();
@@ -1495,7 +1594,7 @@ int main() {
   namespace mesh = gmsh::model::mesh;
   namespace geo = gmsh::model::geo;
   auto fileName = meshUnitCube(5);
-//  auto fileName = meshUnitSquare(40, 1);
+//  auto fileName = meshUnitSquare(10, 1);
   gmsh::initialize();
   gmsh::open(fileName);
   std::vector<int> elementTypes;
@@ -1578,43 +1677,43 @@ int main() {
 //    }
 //  }
 
-//Plot Orientation of Edges
-  std::vector<std::array<double, 3>> dirs;
+////Plot Orientation of Edges
+//  std::vector<std::array<double, 3>> dirs;
   std::ofstream fVtk;
-  fVtk.open("orient.vtk");
-  fVtk << "# vtk DataFile Version 3.0" << '\n';
-  fVtk << "vtk output\n";
-  fVtk << "ASCII" << '\n';
-  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
-  fVtk << "POINTS " << numEdges << " double\n";
-  for(const auto e : edge2node){
-    std::array<double, 3> c = {0, 0, 0};
-    std::array<double, 3> dir = {0, 0, 0};
-    for(auto i = 0; i < 2; ++i){
-      size_t n = e[i];
-      std::vector<double> coord;
-      std::vector<double> paraCoord;
-      int d, t;
-      gmsh::model::mesh::getNode(n, coord, paraCoord, d, t);
-
-      for(auto j = 0; j < 3; ++j){
-        c[j] += 0.5 * coord[j];
-        dir[j] = (i==1) ? dir[j] + coord[j] : dir[j] - coord[j];
-      }
-    }
-    dirs.push_back(dir);
-    fVtk << c[0] << " " << c[1] << " " << c[2] << '\n';
-  }
-//  fVtk << "CELLS 0 0\n";
-//  fVtk << "CELL_TYPES 0\n";
-  fVtk << "POINT_DATA " << numEdges << "\n";
-  fVtk << "VECTORS edges double\n";
-  for(auto k =0; k < numEdges; ++k){
-    auto dir = dirs[k];
-    auto go = globalOrientation[k];
-        fVtk << dir[0] * go << " " << dir[1] * go << " " << dir[2] * go << '\n';
-  }
-  fVtk.close();
+//  fVtk.open("orient.vtk");
+//  fVtk << "# vtk DataFile Version 3.0" << '\n';
+//  fVtk << "vtk output\n";
+//  fVtk << "ASCII" << '\n';
+//  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
+//  fVtk << "POINTS " << numEdges << " double\n";
+//  for(const auto e : edge2node){
+//    std::array<double, 3> c = {0, 0, 0};
+//    std::array<double, 3> dir = {0, 0, 0};
+//    for(auto i = 0; i < 2; ++i){
+//      size_t n = e[i];
+//      std::vector<double> coord;
+//      std::vector<double> paraCoord;
+//      int d, t;
+//      gmsh::model::mesh::getNode(n, coord, paraCoord, d, t);
+//
+//      for(auto j = 0; j < 3; ++j){
+//        c[j] += 0.5 * coord[j];
+//        dir[j] = (i==1) ? dir[j] + coord[j] : dir[j] - coord[j];
+//      }
+//    }
+//    dirs.push_back(dir);
+//    fVtk << c[0] << " " << c[1] << " " << c[2] << '\n';
+//  }
+////  fVtk << "CELLS 0 0\n";
+////  fVtk << "CELL_TYPES 0\n";
+//  fVtk << "POINT_DATA " << numEdges << "\n";
+//  fVtk << "VECTORS edges double\n";
+//  for(auto k =0; k < numEdges; ++k){
+//    auto dir = dirs[k];
+//    auto go = globalOrientation[k];
+//        fVtk << dir[0] * go << " " << dir[1] * go << " " << dir[2] * go << '\n';
+//  }
+//  fVtk.close();
 
   std::vector<size_t> localOriginIndex(numHex);
   for(auto hexIndex =0; hexIndex < numHex; ++hexIndex){
@@ -1642,25 +1741,25 @@ int main() {
     }
   }
 
-  //plot origins of each hex
-//  std::ofstream fVtk;
-  fVtk.open("Origins.vtk");
-  fVtk << "# vtk DataFile Version 3.0" << '\n';
-  fVtk << "vtk output\n";
-  fVtk << "ASCII" << '\n';
-  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
-  fVtk << "POINTS " << numHex << " double\n";
-  for(auto hexIndex = 0; hexIndex < numHex; ++hexIndex){
-    auto myHexGlobalNodes = hex2node[hexIndex];
-    auto myLocalIndex = localOriginIndex[hexIndex];
-    auto myGlobalNode = myHexGlobalNodes[myLocalIndex];
-    std::vector<double> coord;
-    std::vector<double> paraCoord;
-    int dim, tag;
-    gmsh::model::mesh::getNode(myGlobalNode, coord, paraCoord, dim, tag);
-    fVtk << coord[0] << " " << coord[1] << " " << coord[2] << '\n';
-  }
-  fVtk.close();
+////plot origins of each hex
+////  std::ofstream fVtk;
+//  fVtk.open("Origins.vtk");
+//  fVtk << "# vtk DataFile Version 3.0" << '\n';
+//  fVtk << "vtk output\n";
+//  fVtk << "ASCII" << '\n';
+//  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
+//  fVtk << "POINTS " << numHex << " double\n";
+//  for(auto hexIndex = 0; hexIndex < nu5mHex; ++hexIndex){
+//    auto myHexGlobalNodes = hex2node[hexIndex];
+//    auto myLocalIndex = localOriginIndex[hexIndex];
+//    auto myGlobalNode = myHexGlobalNodes[myLocalIndex];
+//    std::vector<double> coord;
+//    std::vector<double> paraCoord;
+//    int dim, tag;
+//    gmsh::model::mesh::getNode(myGlobalNode, coord, paraCoord, dim, tag);
+//    fVtk << coord[0] << " " << coord[1] << " " << coord[2] << '\n';
+//  }
+//  fVtk.close();
 
   //Create new Hex to node vector that has the order of global nodes arranged to match the unit square
   //i.e. change ordering to match consistent orientation.
@@ -1808,6 +1907,7 @@ int main() {
       }
     }
 //    edges.push_back(UnitEdge(myNodes, myNodeCoords, myAdjHex, myLocalIndexInHex, myOri));
+    std::cout << "Edge vector creation edge index = " << e << '\n';
     edges.push_back(UnitEdge(e, myNodes0Index, myNodeCoords, myAdjHex, myLocalIndexInHex, myOri));
   }
 
@@ -1827,7 +1927,7 @@ int main() {
     unitEdge.mMu = edgeMu;
   }
 
-  //Plot Edges: Consider refactoring into own function.
+//Plot Edges: Consider refactoring into own function.
   fVtk.open("Edges.vtk");
   fVtk << "# vtk DataFile Version 3.0" << '\n';
   fVtk << "vtk output\n";
@@ -1851,34 +1951,35 @@ int main() {
   }
   fVtk.close();
 
-  fVtk.open("Hexahedra.vtk");
-  fVtk << "# vtk DataFile Version 3.0" << '\n';
-  fVtk << "vtk output\n";
-  fVtk << "ASCII" << '\n';
-  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
-  fVtk << "POINTS " << nodeCoords.size() / 3 << " double\n";
-  for(auto i = 0; i < nodeCoords.size(); i += 3){
-    fVtk << nodeCoords[i] << " " << nodeCoords[i + 1] << " " << nodeCoords[i + 2] << "\n";
-  }
-
-  const auto numCubes = cubes.size();
-  fVtk << '\n';
-  fVtk << "CELLS " << numCubes << ' ' << 9 * numCubes << '\n';
-  for(auto h = 0; h < numCubes; ++h){
-    const UnitCube myCube = cubes[h];
-    const auto myNodes = myCube.mNodes;
-    fVtk << 8 ;//<< ' ' << myNodes[0] << ' ' << myNodes[1] << '\n';
-    for(auto i = 0; i < 8; ++i){
-      fVtk << ' ' << myNodes[i];
-    }
-    fVtk << '\n';
-  }
-
-  fVtk << '\n' << "CELL_TYPES " << numCubes << '\n';
-  for(auto i = 0; i < numCubes; ++i){
-    fVtk << 12 << '\n';
-  }
-  fVtk.close();
+////Plot hexahedra
+//  fVtk.open("Hexahedra.vtk");
+//  fVtk << "# vtk DataFile Version 3.0" << '\n';
+//  fVtk << "vtk output\n";
+//  fVtk << "ASCII" << '\n';
+//  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
+//  fVtk << "POINTS " << nodeCoords.size() / 3 << " double\n";
+//  for(auto i = 0; i < nodeCoords.size(); i += 3){
+//    fVtk << nodeCoords[i] << " " << nodeCoords[i + 1] << " " << nodeCoords[i + 2] << "\n";
+//  }
+//
+//  const auto numCubes = cubes.size();
+//  fVtk << '\n';
+//  fVtk << "CELLS " << numCubes << ' ' << 9 * numCubes << '\n';
+//  for(auto h = 0; h < numCubes; ++h){
+//    const UnitCube myCube = cubes[h];
+//    const auto myNodes = myCube.mNodes;
+//    fVtk << 8 ;//<< ' ' << myNodes[0] << ' ' << myNodes[1] << '\n';
+//    for(auto i = 0; i < 8; ++i){
+//      fVtk << ' ' << myNodes[i];
+//    }
+//    fVtk << '\n';
+//  }
+//
+//  fVtk << '\n' << "CELL_TYPES " << numCubes << '\n';
+//  for(auto i = 0; i < numCubes; ++i){
+//    fVtk << 12 << '\n';
+//  }
+//  fVtk.close();
 
 //  for(auto ed : edges){
 //    std::cout << "edge=" << ed.mIndex << " Adj hex=(";
@@ -1941,9 +2042,8 @@ int main() {
 //  const double dt = .1;
   std::cout << "dt=" << dt <<std::endl;
 
-  //Set initial fields
   //Exact solution TE_
-  auto exactSol = [](Eigen::Vector3d x, double t){
+  auto exactSolH0Zero = [](Eigen::Vector3d x, double t){
     double eps = 1;
     int m = 1;
     int n = 1;
@@ -1957,223 +2057,91 @@ int main() {
     Eigen::Vector3d HBar {-ky*kx * cos(kx*x[0]) * sin(ky*x[1]) * sin(kz*x[2]),
                           -ky*kz * sin(kx*x[0]) * cos(ky*x[1]) * sin(kz*x[2]),
                           (k2-kz*kz) * sin(kx*x[0]) * sin(ky*x[1]) * cos(kz*x[2])};
-    HBar = HBar * sin(w*t) / (w * eps);
+//    HBar = HBar * sin(w*t) / (w * eps);
+    HBar = -HBar * sin(w*t) / (w * eps);
     Eigen::Vector3d BBar = HBar;
     Eigen::Vector3d EBar {ky / eps * sin(kx*x[0]) * cos(ky*x[1]) * cos(kz*x[2]),
                           -kx / eps * cos(kx*x[0]) * sin(ky*x[1]) * cos(kz*x[2]),
                           0};
-    EBar = EBar * (-cos(w*t));
+//    EBar = EBar * (-cos(w*t));
+    EBar = EBar * cos(w*t);
     Eigen::Vector3d DBar = EBar * eps;
     return std::array<Eigen::Vector3d, 4> {HBar, BBar, EBar, DBar};
   };
-  auto exactHLInf = [](double t){
-  double eps = 1;
-  double k = M_PI * sqrt(3);
-  double w = k / sqrt(eps);
-  return  abs(cos(w*t));
-};
+//  auto exactSolH0Zero = [](Eigen::Vector3d x, double t){
+//    double eps = 1;
+//    int m = 1;
+//    int n = 1;
+//    int p = 1;
+//    double kx = M_PI * m;
+//    double ky = M_PI * n;
+//    double kz = M_PI * p;
+//    double k = sqrt(kx*kx + ky*ky + kz*kz);
+//    double k2 = k * k;
+//    double w = k / sqrt(eps);
+//    Eigen::Vector3d HBar {ky / eps * cos(kx*x[0]) * sin(ky*x[1]) * sin(kz*x[2]),
+//                          -kx / eps * sin(kx*x[0]) * cos(ky*x[1]) * sin(kz*x[2]),
+//                          0};
+//    HBar = HBar * sin(w*t);
+//    Eigen::Vector3d BBar = HBar;
+//    Eigen::Vector3d EBar {-ky*kx * sin(kx*x[0]) * cos(ky*x[1]) * cos(kz*x[2]),
+//                          -ky*kz * cos(kx*x[0]) * sin(ky*x[1]) * cos(kz*x[2]),
+//                          (k2-kz*kz) * cos(kx*x[0]) * cos(ky*x[1]) * sin(kz*x[2])};
+//    EBar = EBar * cos(w*t) / (w * eps);
+//    Eigen::Vector3d DBar = EBar;
+//    return std::array<Eigen::Vector3d, 4> {HBar, BBar, EBar, DBar};
+//  };
 
-//  for(auto &myEdge : edges){
-//    //Edge physical coord and physical H,B at edge
-//    auto myEdgeCoord = myEdge.physicalCoordinate();
-//    auto [hBarVec, bBarVec, unusedE, unusedD] = exactSol(myEdgeCoord, -dt*.5);
-//    auto hBarVecAlongEdge = myEdge.asUnitVector().transpose() * hBarVec * myEdge.asUnitVector();
-////    auto hBarVecAlongEdge = hBarVec;
-//    auto bBarVecAlongEdge = myEdge.asUnitVector().transpose() * bBarVec * myEdge.asUnitVector();
-////    auto bBarVecAlongEdge = bBarVec;
-//    //Put Edge, H, B in a computational Unit Square
-//    const auto &myAdjHex = myEdge.mAdjacentHex;
-////    std::cout << "edge= " << myEdge.mIndex << '\n';
-////    for(auto h = 0; h < myAdjHex.size(); ++h){
-////      auto adjHexIndex = myAdjHex[h];
-////      auto &adjHex = cubes[adjHexIndex];
-////      auto localEdge = myEdge.mIndexInHex[h];
-////      auto localEdgeTan = adjHex.edgeTangential(localEdge);
-////      auto edgeJac = adjHex.edgeJacobian(localEdge);
-////      std::cout << "hex= " << adjHexIndex << '\n';
-////      std::cout << "local edge index= " << localEdge <<'\n';
-//////      for(auto nd : adjHex.mNodes) std::cout << nd << ' ';
-//////      std::cout <<'\n';
-//////      std::cout << "h= " <<  hBarVecAlongEdge.transpose() << '\n';
-//////      std::cout << "h= " << localEdgeTan.transpose() * edgeJac.transpose() * hBarVecAlongEdge << '\n';
-////////      std::cout << "b= " << localEdgeTan.transpose() * edgeJac.inverse() * bBarVecAlongEdge * edgeJac.determinant() << '\n';
-//////      std::cout << "b= " <<  (edgeJac.inverse() * bBarVecAlongEdge * edgeJac.determinant()).transpose() << '\n';
-////      std::cout << "Local Tan= " << localEdgeTan.transpose() << '\n';
-////      std::cout << " In phys=" << (edgeJac*localEdge).transpose() << '\n';
-////      std::cout << "Jac=" <<'\n' << edgeJac << '\n';
-////      std::cout << "----------------" << '\n';
-////    }
-////    std::cout << '\n';
-//    auto hexIndex = myAdjHex[0];
-//    auto &hex = cubes[hexIndex];
-//    auto localEdgeIndex = myEdge.mIndexInHex[0];
-//    auto localEdgeCoord = hex.edgeCoord(localEdgeIndex);
-//    auto localEdgeVec = hex.edgeTangential(localEdgeIndex);
-//    auto jac = hex.jacobian(localEdgeCoord);
-////    std::cout << jac.determinant() << '\n';
-//    //Now use Jacobian to get H and B vectors in computational domain
-//    auto hVec = jac.transpose() * hBarVec;
-//    auto bVec = jac.inverse() * bBarVec * jac.determinant();
-////    auto bVec = jac.inverse() * bBarVec;
-////    std::cout << bVec.transpose() << '\n';
-////    auto bVec = jac.inverse() * bBarInEdgeDir * jac.determinant();
-//    auto edgeTangent = hex.edgeTangential(localEdgeIndex);
-//    //set H and B by projecting in edge direction
-//    myEdge.mH = edgeTangent.transpose() * hVec;
-//    myEdge.mB = edgeTangent.transpose() * bVec;
-////    std::cout << hBarVec.transpose() * myEdge.asUnitVector() - myEdge.mH << "\n\n";
-////    myEdge.mH = bBarVec.transpose() * myEdge.asUnitVector();
-////    myEdge.mB = edgeTangent.transpose() * bVec;
-//  }
-//  for(auto &cb : cubes){
-//    for(auto f = 0; f < 6; ++f){
-//      auto coord = cb.facePhysicalCoordinate(f);
-//      auto [eBar, dBar] = exactSol(coord, -dt/2.);
-//      auto localCoord = cb.faceCoord(f);
-//      auto jac = cb.jacobian(localCoord);
-//      auto e = jac.transpose() * eBar;
-//      auto d = jac.inverse() * dBar * jac.determinant();
-//      auto faceNormal = cb.faceNormal(f);
-//      cb.mE[f] = faceNormal.transpose() * e;
-//      cb.mD[f] = faceNormal.transpose() * d;
-//    }
-//  }
-  for(auto &cube : cubes){
+  //Set initial fields
+  //Exact solution with D0=0
+  auto exactSolD0Zero = [](Eigen::Vector3d x, double t){
+    double eps = 1;
+    int m = 1;
+    int n = 1;
+    int p = 1;
+    double kx = M_PI * m;
+    double ky = M_PI * n;
+    double kz = M_PI * p;
+    double k = sqrt(kx*kx + ky*ky + kz*kz);
+    double k2 = k * k;
+    double w = k / sqrt(eps);
+    Eigen::Vector3d HBar {-ky*kx * cos(kx*x[0]) * sin(ky*x[1]) * sin(kz*x[2]),
+                          -ky*kz * sin(kx*x[0]) * cos(ky*x[1]) * sin(kz*x[2]),
+                          (k2-kz*kz) * sin(kx*x[0]) * sin(ky*x[1]) * cos(kz*x[2])};
+    HBar = HBar * cos(w*t) / (w * eps);
+    Eigen::Vector3d BBar = HBar;
+    Eigen::Vector3d EBar {ky / eps * sin(kx*x[0]) * cos(ky*x[1]) * cos(kz*x[2]) * sin(w*t),
+                          -kx / eps * cos(kx*x[0]) * sin(ky*x[1]) * cos(kz*x[2]) * sin(w*t),
+                          0};
+    Eigen::Vector3d DBar = EBar * eps;
+    return std::array<Eigen::Vector3d, 4> {HBar, BBar, EBar, DBar};
+  };
+
+  //set initial fields
+  for(auto &myCube : cubes){
     for(auto f = 0; f < 6; ++f){
-      auto faceGlobalCoord = cube.facePhysicalCoordinate(f);
-      auto [unusedHBar, unusedBBar, unusedEBarVec, dBarVec] = exactSol(faceGlobalCoord, -0.5*dt);
-      auto jac = cube.faceJacobian(f);
-      auto dVec = jac.inverse() * dBarVec * jac.determinant();
-//      std::cout << dVec.transpose() << '\n' << cube.faceNormal(f).transpose() << "\n-----------\n";
-      double faceD = dVec.transpose() * cube.faceNormal(f);
-      cube.mD[f] = faceD;
-      auto globalFaceIndex = cube.mGlobalFaces[f];
-      faces[globalFaceIndex].mDFlux += 0.5 * faceD;
-      Eigen::Vector3d dVecAtCircLoc = cube.getDVectorAtCirculationLocation(f);
-      auto eVec = cube.mEpsCompInv * dVecAtCircLoc;
-      cube.mE[f] = eVec.transpose() * cube.faceNormal(f);
+      auto faceCoord = myCube.facePhysicalCoordinate(f);
+      auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0Zero(faceCoord, -0.5 * dt);
+      Eigen::Vector3d areaWeightedNormal = myCube.physicalFaceAreaWeighted(f);
+      myCube.mD[f] = dBarVec.transpose() * areaWeightedNormal;
+    }
+    for(int f = 0; f < 6; ++f) {
+      if (myCube.mFaceBoundaryFlag[f] == 0) {
+        auto dVec = myCube.getDVectorAtCirculationLocation(f);
+        auto epsInv = myCube.getEpsCompInv(f);
+        myCube.mE[f] = myCube.faceNormal(f).transpose() * epsInv * dVec;
+      }
     }
   }
+
   plotHexFields(nodeCoords, edges, cubes, "DFields0.vtk");
-  plotHexBHFields(nodeCoords, edges, cubes, "BFields0.vtk");
+  plotHexBHFields(nodeCoords, edges, cubes, "HFields0.vtk");
   double omega = M_PI * sqrt(3);
-  double tMax = 0.9 * M_PI / omega;
-//  double tMax = 0;
-  const int numSteps = static_cast<int>(tMax / dt);
-//  const int numSteps = 1;
+  double tMax = 2 * M_PI / omega;
+//  const int numSteps = static_cast<int>(tMax / dt);
+  const int numSteps = 2;
   double t = 0;
-  //FDTD Update Loop
-  /*
-  for(int timeStep = 0; timeStep < numSteps; ++timeStep) {
-    //D-Update on each unit cube
-    for(auto &myCube : cubes){
-      //update D on each face
-      for(auto f = 0; f < 6; ++f){
-        if(myCube.mFaceBoundaryFlag[f]==0) {
-          auto localAdjEdges = myCube.edgesAdjacentToFace(f);
-          auto localAdjEdgeOri = myCube.edgesOrientationToFace(f);
-          double hCirculation = 0;
-          for (auto e = 0; e < localAdjEdges.size(); ++e) {
-            size_t localEdge = localAdjEdges[e];
-            size_t globalEdgeIndex = myCube.mGlobalEdges[localEdge];
-            hCirculation += edges[globalEdgeIndex].mH * localAdjEdgeOri[e];
-          }
-          myCube.mD[f] += dt * hCirculation;
-        }
-      }
-    }
-    //Get D-flux for each face
-//    for(auto &myFace : faces){
-//      double dFlux = 0;
-//      //Calculate face flux as average of flux on each side
-//      for(auto [adjHex, faceIndexInHex] : myFace.mAdjHexAndIndexInHex){
-//        if(cubes[adjHex].mFaceBoundaryFlag[faceIndexInHex] == 0){
-//          dFlux += cubes[adjHex].mD[faceIndexInHex] * 0.5;
-//        }
-//      }
-//      myFace.mDFlux = dFlux;
-//      //Now set D-field in each adj hex
-//      for(auto [adjHex, faceIndexInHex] : myFace.mAdjHexAndIndexInHex){
-//        auto &myCube = cubes[adjHex];
-//        if(cubes[adjHex].mFaceBoundaryFlag[faceIndexInHex] == 0){
-//          myCube.mD[faceIndexInHex] = dFlux;
-//        }
-//      }
-//    }
-    //E-Update on each unit cube
-    for(auto &myCube : cubes){
-      for(int f = 0; f < 6; ++f) {
-        if (myCube.mFaceBoundaryFlag[f] == 0) {
-          auto dVec = myCube.getDVectorAtCirculationLocation(f);
-          myCube.mE[f] = myCube.faceNormal(f).transpose() * myCube.mEpsCompInv * dVec;
-        }
-      }
-    }
-    //B-Update or Edge flux update
-    for(auto &myEdge : edges){
-      if(myEdge.mBoundaryFlag == 0) {
-        auto adjHexs = myEdge.mAdjacentHex;
-        auto indexInHex = myEdge.mIndexInHex;
-        double eCirculation = 0.;
-        double jacFactor = 0.;
-        for (auto h = 0; h < adjHexs.size(); ++h) {
-          auto hexIndex = adjHexs[h];
-          auto localEdge = indexInHex[h];
-          auto &myHex = cubes[hexIndex];
-          auto adjFaces = myHex.facesAdjacentToEdge(localEdge);
-          auto adjFaceOri = myHex.facesAdjacentToEdge(localEdge);
-          for (auto f = 0; f < adjFaces.size(); ++f) {
-            auto localFaceIndex = adjFaces[f];
-            auto localFaceOri = adjFaceOri[f];
-            eCirculation += myHex.mE[localFaceIndex] * localFaceOri * 0.5;
-          }
-          auto dualJacDet = myHex.dualFaceJacobian(localEdge).determinant();
-//          auto dualJacDet = myHex.edgeJacobian(localEdge).determinant();
-          double jacInvTimesTan = myEdge.asUnitVector().transpose() * (myHex.dualFaceJacobian(localEdge).inverse()
-              * myHex.edgeTangential(localEdge));
-          jacFactor += dualJacDet * jacInvTimesTan;
-//          std::cout << dualJacDet << '\n';
-        }
-//        std::cout << jacFactor << '\n';
-        myEdge.mBFlux += -dt * eCirculation;
-//        myEdge.mB = myEdge.mBFlux * jacFactor; //working B-update
-//        myEdge.mB = myEdge.mBFlux;
-//begin new update
-        myEdge.mB += -dt * eCirculation * 4 / adjHexs.size();
-        for (auto h = 0; h < adjHexs.size(); ++h) {
-          auto hexIndex = adjHexs[h];
-          auto localEdge = indexInHex[h];
-          auto &myHex = cubes[hexIndex];
-          myHex.mB[localEdge] = myEdge.mB;
-        }
-      }
-//end new update
-    }
-    //H-Update
-    for(auto &myEdge : edges){
-      if(myEdge.mBoundaryFlag == 0) {
-        auto adjHexs = myEdge.mAdjacentHex;
-        auto indexInHex = myEdge.mIndexInHex;
-        double muFactor = 0.;
-        for (auto h = 0; h < adjHexs.size(); ++h) {
-          auto hexIndex = adjHexs[h];
-          auto localEdge = indexInHex[h];
-          auto &myHex = cubes[hexIndex];
-          muFactor += myHex.edgeTangential(localEdge).transpose() * myHex.getMuComp(localEdge) * myHex.edgeTangential(localEdge);
-        }
-        myEdge.mH = myEdge.mB / muFactor / adjHexs.size();
-        for (auto h = 0; h < adjHexs.size(); ++h) {
-          auto hexIndex = adjHexs[h];
-          auto localEdge = indexInHex[h];
-          auto &myHex = cubes[hexIndex];
-          myHex.mH[localEdge] = myEdge.mH;
-        }
-        //end new update
-      }
-    }
-    t+=dt;
-  }
-   */
+
   //FDTD Update Loop
   for(int timeStep = 0; timeStep < numSteps; ++timeStep) {
     //D-Update
@@ -2186,16 +2154,14 @@ int main() {
           double hCirculation = 0;
           for (auto e = 0; e < localAdjEdges.size(); ++e) {
             size_t localEdge = localAdjEdges[e];
-            hCirculation += myCube.mH[localEdge] * localAdjEdgeOri[e];
-//            size_t globalEdgeIndex = myCube.mGlobalEdges[localEdge];
-//            hCirculation += edges[globalEdgeIndex].mH * localAdjEdgeOri[e];
+//            hCirculation += myCube.mH[localEdge] * localAdjEdgeOri[e];
+            size_t globalEdgeIndex = myCube.mGlobalEdges[localEdge];
+            hCirculation += edges[globalEdgeIndex].mH * localAdjEdgeOri[e];
           }
           myCube.mD[f] += dt * hCirculation;
         }
       }
-    }
-    //E-Update: get E=eps_inv D
-    for(auto &myCube : cubes){
+      //E-update
       for(int f = 0; f < 6; ++f) {
         if (myCube.mFaceBoundaryFlag[f] == 0) {
           auto dVec = myCube.getDVectorAtCirculationLocation(f);
@@ -2206,33 +2172,22 @@ int main() {
       }
     }
     t += 0.5 * dt;
+
     //B-Update
     for (auto &myEdge: edges) {
       if(myEdge.mBoundaryFlag == 0) {
         const auto &adjHex = myEdge.mAdjacentHex;
         const auto &edgeIndicesInHex = myEdge.mIndexInHex;
         const size_t numAdjHex = adjHex.size();
-        double muTangent = 0;
         double circulation = 0;
         //loop over adjacent hexahedra and calculate partial circulations from each to update B on edge
-//        std::cout << "Edge = " << myEdge.mIndex << '\n';
-        auto dualArea = 0.;
         for (auto h = 0; h < numAdjHex; ++h) {
           const size_t myHexIndex = adjHex[h];
           const size_t localEdgeIndex = edgeIndicesInHex[h];
           UnitCube &myHex = cubes[myHexIndex];
           auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
-//          muTangent += localEdgeDir.transpose() * myHex.getMuComp(localEdgeIndex) * localEdgeDir;
-          muTangent += localEdgeDir.transpose() * myHex.getMuComp(localEdgeIndex) * localEdgeDir;
           auto facesAdjToEdge = myHex.facesAdjacentToEdge(localEdgeIndex);
           auto faceOrientations = myHex.facesOrientationToEdge(localEdgeIndex);
-          auto myJac = myHex.edgeJacobian(localEdgeIndex);
-//          std::cout << myJac << "\n";
-//          std::cout << localEdgeDir.transpose() << "\n" << (myJac *localEdgeDir).transpose() << "\n\n";
-//          double myCoeff = (localEdgeDir.transpose() * myJac * localEdgeDir);
-//          dualArea += 0.25 / myHex.dualFaceJacobian(localEdgeIndex).determinant();
-//          dualArea += 0.25 * myCoeff / myHex.edgeJacobian(localEdgeIndex).determinant();
-          dualArea += myHex.dualFacePhysicalArea(localEdgeIndex);
           for (auto f = 0; f < facesAdjToEdge.size(); ++f) {
             size_t faceIndex = facesAdjToEdge[f];
             int faceOri = faceOrientations[f];
@@ -2243,207 +2198,190 @@ int main() {
             circulation += eDotDl;
           }
         }
-//        std::cout <<'\n';
-        double N = static_cast<double>(numAdjHex);
-//        myEdge.mB += -dt * circulation * (4. / N); //Working
-//        myEdge.mB += -dt * circulation;
-        myEdge.mB += -dt * circulation / dualArea;
-//        std::cout << "Edge=" << myEdge.mIndex << ", area=" << dualArea << '\n';
-//        myEdge.mH = myEdge.mB * N / muTangent;
-//        myEdge.mH = myEdge.mB / myEdge.mMu;
+        myEdge.mBFlux += -dt * 4.*circulation / numAdjHex;
+//        myEdge.mBFlux += -dt *circulation;
       }
     }
-//    //H-Update-Working
-//    for (auto &myEdge: edges) {
-//      if(myEdge.mBoundaryFlag == 0) {
-//        const auto &adjHex = myEdge.mAdjacentHex;
-//        const auto &edgeIndicesInHex = myEdge.mIndexInHex;
-//        const size_t numAdjHex = adjHex.size();
-//        double globalEdgeScalarH = 0;
-//        //In each adj hex, construct a vector for B so that we can compute H = mu^-1 B
-//        for (auto h = 0; h < numAdjHex; ++h) {
-//          const size_t myHexIndex = adjHex[h];
-//          const size_t localEdgeIndex = edgeIndicesInHex[h];
-//          UnitCube &myHex = cubes[myHexIndex];
-//          auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
-////          auto localAdjEdges = edgesAdjacentToEdge(localEdgeIndex);
-//          //use local adj. edges to get B as a vector
-//          Eigen::Vector3d localBVec = localEdgeDir * myEdge.mB;
-////          Eigen::Vector3d localBVec {0, 0, 0};
-////          for(auto adjEdgeIndex : localAdjEdges){
-//          for(auto adjEdgeIndex = 0; adjEdgeIndex < 12; ++adjEdgeIndex){
-//            size_t globalAdjEdgeIndex = myHex.mGlobalEdges[adjEdgeIndex];
-//            Eigen::Vector3d adjEdgeDir = myHex.edgeTangential(adjEdgeIndex);
-//            //if the other edge is not in the same direction, then add it;
-//            if(adjEdgeDir != localEdgeDir){
-//              Eigen::Vector3d adjEdgeB = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mB;
-//              localBVec += adjEdgeB * 0.25; //interpolate all other components to unit cube center
-//            }
-//          }
-////          Eigen::Vector3d localHVec = myHex.getMuCompInv(localEdgeIndex) * localBVec;
-//          Eigen::Vector3d localHVec = myHex.getMuCompInvAtDualFace(localEdgeIndex) * localBVec;
-////          Eigen::Vector3d localHVec = myHex.getMuCompInv(localEdgeIndex) * localEdgeDir * myEdge.mB;
-//          //now project H onto edge to get scalar, also we average h scalar about all adj hexes
-//          double localHScalar = (localEdgeDir.transpose() * localHVec);
-////          globalEdgeScalarH += localHScalar / static_cast<double>(numAdjHex);
-////          globalEdgeScalarH += localHScalar / static_cast<double>(numAdjHex);
-//          globalEdgeScalarH += localHScalar / 4.;
-//          myHex.mH[localEdgeIndex] = localHScalar;
-//        }
-//        myEdge.mH = globalEdgeScalarH;
-////        for (auto h = 0; h < numAdjHex; ++h) {
-////          const size_t myHexIndex = adjHex[h];
-////          const size_t localEdgeIndex = edgeIndicesInHex[h];
-////          UnitCube &myHex = cubes[myHexIndex];
-////          myHex.mH[localEdgeIndex] = myEdge.mH;
-////        }
-//      }
-//    }
-
-//    H-Update -- Not working
+//        H-Update-Working
     for (auto &myEdge: edges) {
       if(myEdge.mBoundaryFlag == 0) {
         const auto &adjHex = myEdge.mAdjacentHex;
         const auto &edgeIndicesInHex = myEdge.mIndexInHex;
         const size_t numAdjHex = adjHex.size();
         double globalEdgeScalarH = 0;
-        double localHScalar = 0.;
-        Eigen::Vector3d bVec = myEdge.asUnitVector() * myEdge.mB;
+        double totalDualArea = 0;
+        double totalJac = 0;
         //In each adj hex, construct a vector for B so that we can compute H = mu^-1 B
         for (auto h = 0; h < numAdjHex; ++h) {
           const size_t myHexIndex = adjHex[h];
           const size_t localEdgeIndex = edgeIndicesInHex[h];
           UnitCube &myHex = cubes[myHexIndex];
           auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
-//          auto localAdjEdges = edgesAdjacentToEdge(localEdgeIndex);
-          //use local adj. edges to get B as a vector
-//          Eigen::Vector3d localHVecInCell =  myHex.edgeJacobian(localEdgeIndex).transpose() * myEdge.asUnitVector() * myEdge.mB  ;
-          Eigen::Vector3d localHVecInCell =  myHex.edgeJacobian(localEdgeIndex).transpose() * bVec;
-          localHScalar = localHVecInCell.transpose()*localEdgeDir;
-          myHex.mH[localEdgeIndex] = localHScalar;
+          //use local adj. edges to get dB/dt Flux as a vector
+          Eigen::Vector3d localBFluxVec = localEdgeDir * myEdge.mBFlux * 9. / 16.;
+          auto parEdges = localParallelEdgeCounterClockwise(localEdgeIndex);
+//          Eigen::Vector3d localBFluxVec = localEdgeDir * myEdge.mBFlux;
+          for(auto adjEdgeIndex = 0; adjEdgeIndex < 12; ++adjEdgeIndex){
+            size_t globalAdjEdgeIndex = myHex.mGlobalEdges[adjEdgeIndex];
+            Eigen::Vector3d adjEdgeDir = myHex.edgeTangential(adjEdgeIndex);
+            //if the other edge is not in the same direction, then add it;
+            if(adjEdgeDir != localEdgeDir){
+              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+              localBFluxVec += adjEdgeBFlux * 0.25; //interpolate all other components to unit cube center
+            }
+            else if(adjEdgeIndex == parEdges[1] or adjEdgeIndex == parEdges[3]){
+              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+              localBFluxVec += adjEdgeBFlux * 3. / 16.;
+            }
+            else if(adjEdgeIndex == parEdges[2]){
+              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+              localBFluxVec += adjEdgeBFlux * 1. / 16.;
+            }
+          }
+//          auto adjEdges = edgesAdjacentToEdge(localEdgeIndex);
+//          for (auto adjEdgeIndex: adjEdges) {
+//            size_t globalAdjEdgeIndex = myHex.mGlobalEdges[adjEdgeIndex];
+//            Eigen::Vector3d adjEdgeDir = myHex.edgeTangential(adjEdgeIndex);
+//            localBFluxVec += 0.5 * adjEdgeDir * edges[globalAdjEdgeIndex].mBFlux;
+//          }
+//          Eigen::Vector3d localHVec = myHex.getMuCompInv(localEdgeIndex) * localBFluxVec;
+          Eigen::Vector3d localHVec = myHex.getMuCompInvAtCenter() * localBFluxVec;
+//          Eigen::Vector3d localHVec = myHex.getMuCompInvAtDualFace(localEdgeIndex) * localBFluxVec;
+          //now project H onto edge to get scalar, also we average h scalar about all adj hexes
+          double localHScalar = (localEdgeDir.transpose() * localHVec);
+//          globalEdgeScalarH += localHScalar * myHex.dualFacePhysicalArea(localEdgeIndex);
           globalEdgeScalarH += localHScalar;
+//          globalEdgeScalarH += localHScalar * myHex.dualFaceJacobian(localEdgeIndex).determinant();
+          totalJac += myHex.dualFaceJacobian(localEdgeIndex).determinant();
+          totalDualArea += myHex.dualFacePhysicalArea(localEdgeIndex);
+//          myHex.mH[localEdgeIndex] += dt * localHScalar;
         }
         myEdge.mH = globalEdgeScalarH / numAdjHex;
+//        myEdge.mH += dt * globalEdgeScalarH / totalDualArea;
+//        myEdge.mH = globalEdgeScalarH / totalDualArea;
+//        myEdge.mH += dt * globalEdgeScalarH / totalJac;
+      }
+      else{
+        myEdge.mH = 0;
       }
     }
     t += 0.5 * dt;
-
   }
   plotHexFields(nodeCoords, edges, cubes, "DFields1.vtk");
-  plotHexBHFields(nodeCoords, edges, cubes, "BFields1.vtk");
+  plotHexBHFields(nodeCoords, edges, cubes, "HFields1.vtk");
 //  plotEdgeFields(nodeCoords, edges, cubes, "HFields1.vtk");
   double runningMaxError = 0.;
   double runningMaxExact = 0.;
   double runningL2Error = 0.;
   double runningL2Exact = 0.;
-//  for(auto &cube : cubes){
-//    auto [eBarInterp, dBarInterp] = physicalEandDAtCenter(cube);
-//    auto c = cube.hexCenterPhysicalCoordinate();
-//    auto [unusedH, unusedB, eBarExact, dBarExact] = exactSol(c, t);
-//    Eigen::Vector3d diff = (dBarExact - dBarInterp);
-////    std::cout << "Numeric=" << dBarInterp.transpose() <<'\n'
-////              << "Exact=" << dBarExact.transpose()<< "\n\n";
-//    runningMaxError = std::max(runningMaxError, diff.norm());
-//    runningMaxExact = std::max(runningMaxExact, dBarExact.norm());
-//  }
-
-  for(auto &cube : cubes){
-    for(auto f = 0; f < 6; ++f){
-      auto faceLocalCoord = cube.faceCoord(f);
-      auto c = cube.mapToHex(faceLocalCoord);
-      auto [hBarExact, bBarExact, eBarExact, dBarExact] = exactSol(c, t-dt/2.);
-      auto jac = cube.jacobian(faceLocalCoord);
-      auto localFaceNormal = cube.faceNormal(f);
-      Eigen::Vector3d globalFaceNormal = jac * localFaceNormal;
-      globalFaceNormal = globalFaceNormal / globalFaceNormal.norm();
-      auto ae = cube.edgesAdjacentToFace(f);
-      for(auto ii = 0; ii < 4; ++ii){
-        ae[ii] = cube.mGlobalEdges[ae[ii]];
+  size_t maxErrorEdge = 0;
+  for(auto &myEdge : edges){
+    size_t adjHex = myEdge.mAdjacentHex[0];
+    size_t e = myEdge.mIndexInHex[0];
+    UnitCube &myCube = cubes[adjHex];
+    if(myEdge.mBoundaryFlag == 0) {
+      auto physicalEdgeCoord = myCube.edgePhysicalCoord(e);
+      auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0Zero(physicalEdgeCoord, t);
+      Eigen::Vector3d physicalEdge = myCube.edgeJacobian(e) * myCube.edgeTangential(e);
+      double hExact = hBarVec.transpose() * physicalEdge; //this is in computational space
+      double diff = abs(hExact - myEdge.mH);
+      if(diff > runningMaxError){
+        maxErrorEdge = myEdge.mIndex;
       }
-      std::sort(ae.begin(), ae.end());
-      std::array<size_t, 4> myFace{6,14,18,19} ;
-//      if(myFace==ae) {
-//        std::cout << '\n' << "cube=" << cube.mIndex << '\n';
-//        std::cout << "face=";
-//        for (auto a: cube.edgesAdjacentToFace(f)) {
-//          std::cout << cube.mGlobalEdges[a] << ",";
-//        }
-//        std::cout << '\n';
-////      std::cout << globalFaceNormal.transpose() * jac * localFaceNormal / jac.determinant() << '\n';
-////        std::cout << globalFaceNormal.transpose() * jac.transpose().inverse() * localFaceNormal << '\n';
-//        std::cout << localFaceNormal.transpose() *  jac.transpose() * globalFaceNormal << '\n';
-//      }
-      double dBarExactScalar = dBarExact.transpose() * globalFaceNormal;
-      double dExactScalar = localFaceNormal.transpose() * (jac.inverse() * dBarExact * jac.determinant());
-      double eBarExactScalar = eBarExact.transpose() * globalFaceNormal;
-      auto localDVec = localFaceNormal * cube.mD[f];
-      auto localEVec = localFaceNormal * cube.mE[f];
-      auto globalDBarVec = jac * localDVec / jac.determinant();
-      auto globalEBarVec = jac.transpose().inverse() * localEVec;
-      auto dBarNumScalar = globalDBarVec.transpose() * globalFaceNormal;
-      auto eBarNumScalar = globalEBarVec.transpose() * globalFaceNormal;
-//      std::cout << "exact=" << eBarExactScalar << ", num=" << eBarNumScalar <<'\n';
-//      double scalarDiff = std::abs(dBarExactScalar-dBarNumScalar);
-//      double scalarDiff = std::abs(dBarExactScalar-dBarNumScalar);
-      double scalarDiff = std::abs(dExactScalar-cube.mD[f]);
-      runningMaxError = std::max(runningMaxError, scalarDiff);
-      runningMaxExact = std::max(runningMaxExact, std::abs(dExactScalar));
-      runningL2Error += scalarDiff*scalarDiff;
-      runningL2Exact += dExactScalar * dExactScalar;
+      runningMaxError = std::max(runningMaxError, diff);
+      runningMaxExact = std::max(runningMaxExact, hExact);
+      runningL2Error += diff * diff;
+      runningL2Exact += hExact * hExact;
     }
-//    std::cout << '\n';
-//    auto [eBarInterp, dBarInterp] = physicalEandDAtCenter(cube);
-//    auto [hBarInterp, bBarInterp] = physicalHandBAtCenter(cube, edges);
-//    auto c = cube.hexCenterPhysicalCoordinate();
-////    auto [hBarExact, bBarExact, eBarExact, dBarExact] = exactSol(c, t-dt/2);
-//    auto [hBarExact, bBarExact, eBarExact, dBarExact] = exactSol(c, t);
-////    Eigen::Vector3d diff = (hBarExact - hBarInterp);
-////    Eigen::Vector3d diff = (bBarExact - bBarInterp);
-//    Eigen::Vector3d diff = (dBarExact - dBarInterp);
-////    std::cout << "Numeric=" << bBarInterp.transpose() <<'\n'
-////              << "Exact=" << bBarExact.transpose()<< "\n\n";
-//    std::cout << "Numeric=" << dBarInterp.transpose() <<'\n'
-//              << "Exact=" << dBarExact.transpose()<< "\n\n";
-//    runningMaxError = std::max(runningMaxError, diff.norm());
-//    runningMaxExact = std::max(runningMaxExact, hBarExact.norm());
   }
 
-  std::cout << "abs lInf error = " << runningMaxError << std::endl;
-  std::cout << "rel lInf error = " << runningMaxError / runningMaxExact  << std::endl;
-  std::cout << "rel l2 error = " << sqrt(runningL2Error / runningL2Exact)  << std::endl;
-  std::cout << "t=" << t << ", tmax=" << tMax << std::endl;
-  //plot boundary faces
-  std::stringstream myBoundFaces;
-  size_t numBoundaryFaces = 0;
+  double runningMaxErrorD = 0.;
+  double runningMaxExactD = 0.;
+  double runningL2ErrorD = 0.;
+  double runningL2ExactD = 0.;
   for(auto &myCube : cubes){
-    for(auto f = 0; f < 6; ++f){
-      if(myCube.mFaceBoundaryFlag[f] == 1){
-        auto myCoord = myCube.faceCoord(f);
-        auto globalCoord = myCube.mapToHex(myCoord);
-        myBoundFaces << globalCoord.transpose() << '\n';
-        numBoundaryFaces++;
+    for(auto f = 0; f<6; ++f){
+      if(myCube.mFaceBoundaryFlag[f]==0) {
+        auto faceCoord = myCube.facePhysicalCoordinate(f);
+        auto areaWeightedNormal = myCube.physicalFaceAreaWeighted(f);
+        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0Zero(faceCoord, t - 0.5 * dt);
+        double exactD = dBarVec.transpose() * areaWeightedNormal;
+        double diff = abs(myCube.mD[f] - exactD);
+        runningMaxErrorD = std::max(runningMaxErrorD, diff);
+        runningMaxExactD = std::max(runningMaxExactD, exactD);
+        runningL2ErrorD += diff * diff;
+        runningL2ExactD += exactD * exactD;
       }
     }
   }
-  fVtk.open("BoundaryFaces.vtk");
+
+  std::cout << "H, D: rel lInf error = " << runningMaxError / runningMaxExact << ","
+            << runningMaxErrorD / runningMaxExactD << '\n';
+  std::cout << "H, D: rel l2 error = " << sqrt(runningL2Error / runningL2Exact)
+            << "," << sqrt(runningL2ErrorD / runningL2ExactD)  << std::endl;
+  std::cout << "t=" << t << ", t-max=" << tMax;
+  std::cout << ", num steps = " << numSteps << std::endl;
+  std::cout << "max error edge " << maxErrorEdge << '\n';
+
+////set H-fields to error and plot
+//  for(auto &edge : edges){
+//    auto physicalEdgeCoord = edge.physicalCoordinate();
+////    auto [hBarVec, unusedB, unusedE, unusedD] = exactSolD0Zero(physicalEdgeCoord, t-0.5*dt);
+//    auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0Zero(physicalEdgeCoord, t);
+//    //Piola transformation rule or H^T dl = HBar^T dl
+//    double hExact = hBarVec.transpose() * edge.asUnitVector();
+//    auto diff = abs(hExact*edge.length()-edge.mH);
+//    edge.mH = diff;
+//  }
+//  plotHexBHFields(nodeCoords, edges, cubes, "HError.vtk");
+
+
+//  //plot boundary faces
+//  std::stringstream myBoundFaces;
+//  size_t numBoundaryFaces = 0;
+//  for(auto &myCube : cubes){
+//    for(auto f = 0; f < 6; ++f){
+//      if(myCube.mFaceBoundaryFlag[f] == 1){
+//        auto myCoord = myCube.faceCoord(f);
+//        auto globalCoord = myCube.mapToHex(myCoord);
+//        myBoundFaces << globalCoord.transpose() << '\n';
+//        numBoundaryFaces++;
+//      }
+//    }
+//  }
+//  std::stringstream myBoundEdges;
+//  size_t numBoundEdges = 0;
+//  for(UnitEdge &myE : edges){
+//    if(myE.mBoundaryFlag ==  1){
+//      myBoundEdges << myE.physicalCoordinate().transpose() << '\n';
+//      numBoundEdges++;
+//    }
+//  }
+//  fVtk.open("BoundaryFaces.vtk");
+//  fVtk << "# vtk DataFile Version 3.0" << '\n';
+//  fVtk << "vtk output\n";
+//  fVtk << "ASCII" << '\n';
+//  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
+//  fVtk << "POINTS " << numBoundaryFaces << " double\n\n";
+//  fVtk << myBoundFaces.str();
+//  fVtk.close();
+//
+//  fVtk.open("BoundaryEdges.vtk");
+//  fVtk << "# vtk DataFile Version 3.0" << '\n';
+//  fVtk << "vtk output\n";
+//  fVtk << "ASCII" << '\n';
+//  fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
+//  fVtk << "POINTS " << numBoundEdges << " double\n\n";
+//  fVtk << myBoundEdges.str();
+//  fVtk.close();
+
+////Plot max error edge
+  fVtk.open("MaxErrorEdge.vtk");
   fVtk << "# vtk DataFile Version 3.0" << '\n';
   fVtk << "vtk output\n";
   fVtk << "ASCII" << '\n';
   fVtk << "DATASET UNSTRUCTURED_GRID" << '\n';
-  fVtk << "POINTS " << numBoundaryFaces << " double\n\n";
-  fVtk << myBoundFaces.str();
+  fVtk << "POINTS " << 1 << " double\n\n";
+  fVtk << edges[maxErrorEdge].physicalCoordinate().transpose() << std::endl;
   fVtk.close();
-
-//  for(auto cb : cubes){
-//    std::cout << "hex= " << cb.mIndex <<'\n';
-//    for(auto f = 0; f < 6; ++f){
-//      auto adjLocalEdges = cb.edgesAdjacentToFace(f);
-//      std::cout << "face= ";
-//      for(auto le : adjLocalEdges) std::cout << cb.mGlobalEdges[le] << ' ';
-//      std::cout <<'\n';
-//      auto jac = cb.faceJacobian(f);
-//      std::cout << jac.inverse() * jac.determinant() << '\n';
-//    }
-//    std::cout << '\n';
-//  }
 }
