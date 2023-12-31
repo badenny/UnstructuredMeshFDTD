@@ -8,12 +8,12 @@
 #include <map>
 #include "EdgeHash.h"
 #include "Eigen/Dense"
-#include <execution>
+//#include <execution>
 #include <numeric>
 #include <random>
 #include <cmath>
-#include <unsupported/Eigen/SpecialFunctions>
-#include <omp.h>
+//#include <unsupported/Eigen/SpecialFunctions>
+//#include <omp.h>
 
 using Edge = std::array<size_t, 2>;
 using Hex = std::array<size_t, 8>;
@@ -1726,8 +1726,8 @@ int main() {
   namespace geo = gmsh::model::geo;
 //  int numSubDivs = 4;
 //  std::string fileName = "UnitCubePerturbed" + std::to_string(numSubDivs) + ".msh";
-  auto fileName = meshUnitCube(5,4);
-//  auto fileName = meshUnitSquare(20, 1);
+//  auto fileName = meshUnitCube(10,2);
+  auto fileName = meshUnitSquare(20, 1.);
 //  auto cylFileName = meshUnitCircle(5);
 //  auto fileName = meshUnitCircle(20);
 
@@ -2414,7 +2414,6 @@ int main() {
   //FDTD Update Loop
   for(int timeStep = 0; timeStep < numSteps; ++timeStep) {
     //D-Update
-    /*
     for(auto &myCube : cubes){
       //update D on each face
       for(auto f = 0; f < 6; ++f){
@@ -2448,43 +2447,41 @@ int main() {
         }
       }
     }
-    */
     //Parallel D-Update and  E-Update
-#pragma omp parallel for shared(cubes, edges)
-    for (size_t cubeIdx = 0; cubeIdx < cubes.size(); ++cubeIdx) {
-      auto &myCube = cubes[cubeIdx];
-
-      for (auto f = 0; f < 6; ++f) {
-        if (myCube.mFaceBoundaryFlag[f] == 0) {
-          auto localAdjEdges = myCube.edgesAdjacentToFace(f);
-          auto localAdjEdgeOri = myCube.edgesOrientationToFace(f);
-          double hCirculation = 0;
-
-          for (auto e = 0; e < localAdjEdges.size(); ++e) {
-            size_t localEdge = localAdjEdges[e];
-            size_t globalEdgeIndex = myCube.mGlobalEdges[localEdge];
-            hCirculation += edges[globalEdgeIndex].mH * localAdjEdgeOri[e];
-          }
-
-#pragma omp atomic
-          myCube.mD[f] += dt * hCirculation;
-        }
-      }
-
-      for (int f = 0; f < 6; ++f) {
-        if (myCube.mFaceBoundaryFlag[f] == 0) {
-          auto dVec = myCube.getDVectorAtCirculationLocation(f);
-          auto epsInv = myCube.getEpsCompInv(f);
-          myCube.mE[f] = myCube.faceNormal(f).transpose() * epsInv * dVec;
-        } else {
-          myCube.mE[f] = 0;
-        }
-      }
-    }
+//#pragma omp parallel for shared(cubes, edges)
+//    for (size_t cubeIdx = 0; cubeIdx < cubes.size(); ++cubeIdx) {
+//      auto &myCube = cubes[cubeIdx];
+//
+//      for (auto f = 0; f < 6; ++f) {
+//        if (myCube.mFaceBoundaryFlag[f] == 0) {
+//          auto localAdjEdges = myCube.edgesAdjacentToFace(f);
+//          auto localAdjEdgeOri = myCube.edgesOrientationToFace(f);
+//          double hCirculation = 0;
+//
+//          for (auto e = 0; e < localAdjEdges.size(); ++e) {
+//            size_t localEdge = localAdjEdges[e];
+//            size_t globalEdgeIndex = myCube.mGlobalEdges[localEdge];
+//            hCirculation += edges[globalEdgeIndex].mH * localAdjEdgeOri[e];
+//          }
+//
+//#pragma omp atomic
+//          myCube.mD[f] += dt * hCirculation;
+//        }
+//      }
+//
+//      for (int f = 0; f < 6; ++f) {
+//        if (myCube.mFaceBoundaryFlag[f] == 0) {
+//          auto dVec = myCube.getDVectorAtCirculationLocation(f);
+//          auto epsInv = myCube.getEpsCompInv(f);
+//          myCube.mE[f] = myCube.faceNormal(f).transpose() * epsInv * dVec;
+//        } else {
+//          myCube.mE[f] = 0;
+//        }
+//      }
+//    }
     t += 0.5 * dt;
 
     //B-Update
-    /*
     for (auto &myEdge: edges) {
       if(myEdge.mBoundaryFlag == 0) {
         const auto &adjHex = myEdge.mAdjacentHex;
@@ -2512,140 +2509,138 @@ int main() {
         myEdge.mBFlux += -dt * 4.*circulation / numAdjHex;
       }
     }
-     */
     //Parallel B-Update
-#pragma omp parallel for shared(edges, cubes)
-    for (size_t i = 0; i < edges.size(); ++i) {
-      auto &myEdge = edges[i];
-      if (myEdge.mBoundaryFlag == 0) {
-        const auto &adjHex = myEdge.mAdjacentHex;
-        const auto &edgeIndicesInHex = myEdge.mIndexInHex;
-        const size_t numAdjHex = adjHex.size();
-        double circulation = 0;
-        for (auto h = 0; h < numAdjHex; ++h) {
-          const size_t myHexIndex = adjHex[h];
-          const size_t localEdgeIndex = edgeIndicesInHex[h];
-          UnitCube &myHex = cubes[myHexIndex];
-          auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
-          auto facesAdjToEdge = myHex.facesAdjacentToEdge(localEdgeIndex);
-          auto faceOrientations = myHex.facesOrientationToEdge(localEdgeIndex);
-          for (auto f = 0; f < facesAdjToEdge.size(); ++f) {
-            size_t faceIndex = facesAdjToEdge[f];
-            int faceOri = faceOrientations[f];
-            double e = myHex.mE[faceIndex];
-            double eDotDl = e * 0.5 * faceOri;
-            circulation += eDotDl;
-          }
-        }
-        // Critical section to update mBFlux in parallel
-//#pragma omp critical
-        {
-#pragma omp atomic
-          myEdge.mBFlux += -dt * 4.*circulation / numAdjHex;
-        }
-      }
-    }
-    /*
-    for (auto &myEdge: edges) {
-      if(myEdge.mBoundaryFlag == 0) {
-        const auto &adjHex = myEdge.mAdjacentHex;
-        const auto &edgeIndicesInHex = myEdge.mIndexInHex;
-        const size_t numAdjHex = adjHex.size();
-        double globalEdgeScalarH = 0;
-        for (auto h = 0; h < numAdjHex; ++h) {
-          const size_t myHexIndex = adjHex[h];
-          const size_t localEdgeIndex = edgeIndicesInHex[h];
-          UnitCube &myHex = cubes[myHexIndex];
-          auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
-          Eigen::Vector3d localBFluxVec = localEdgeDir * myEdge.mBFlux * 9. / 16.;
-          auto parEdges = localParallelEdgeCounterClockwise(localEdgeIndex);
-          for(auto adjEdgeIndex = 0; adjEdgeIndex < 12; ++adjEdgeIndex){
-            size_t globalAdjEdgeIndex = myHex.mGlobalEdges[adjEdgeIndex];
-            UnitEdge &adjEdge = edges[globalAdjEdgeIndex];
-            Eigen::Vector3d adjEdgeDir = myHex.edgeTangential(adjEdgeIndex);
-            //if the other edge is not in the same direction, then add it;
-            if(adjEdgeDir != localEdgeDir){
-              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
-              localBFluxVec += adjEdgeBFlux * 0.25; //interpolate all other components to unit cube center
-            }
-            else if(adjEdgeIndex == parEdges[1] or adjEdgeIndex == parEdges[3]){
-              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
-              localBFluxVec += adjEdgeBFlux * 3. / 16.;
-            }
-            else if(adjEdgeIndex == parEdges[2]){
-              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
-              localBFluxVec += adjEdgeBFlux * 1. / 16.;
-            }
-          }
-          Eigen::Vector3d localHVec = myHex.getMuCompInvAtDualFace(localEdgeIndex) * localBFluxVec;
-          //now project H onto edge to get scalar, also we average h scalar about all adj hexes
-          double localHScalar = (localEdgeDir.transpose() * localHVec);
-          globalEdgeScalarH += localHScalar;
-        }
-        myEdge.mH = globalEdgeScalarH / numAdjHex;
-      }
-      else{
-        myEdge.mH = 0;
-      }
-    }*/
-    //Parallel H-Update
-#pragma omp parallel for shared(edges, cubes)
-    for (size_t i = 0; i < edges.size(); ++i) {
-      auto &myEdge = edges[i];
-      if (myEdge.mBoundaryFlag == 0) {
-        const auto &adjHex = myEdge.mAdjacentHex;
-        const auto &edgeIndicesInHex = myEdge.mIndexInHex;
-        const size_t numAdjHex = adjHex.size();
-        double globalEdgeScalarH = 0;
-
-        for (auto h = 0; h < numAdjHex; ++h) {
-          const size_t myHexIndex = adjHex[h];
-          const size_t localEdgeIndex = edgeIndicesInHex[h];
-          UnitCube &myHex = cubes[myHexIndex];
-          auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
-          Eigen::Vector3d localBFluxVec = localEdgeDir * myEdge.mBFlux * 9. / 16.;
-          auto parEdges = localParallelEdgeCounterClockwise(localEdgeIndex);
-
-//#pragma omp simd reduction(+: localBFluxVec, globalEdgeScalarH)
-          for(auto adjEdgeIndex = 0; adjEdgeIndex < 12; ++adjEdgeIndex){
-            size_t globalAdjEdgeIndex = myHex.mGlobalEdges[adjEdgeIndex];
-            UnitEdge &adjEdge = edges[globalAdjEdgeIndex];
-            Eigen::Vector3d adjEdgeDir = myHex.edgeTangential(adjEdgeIndex);
-
-            if(adjEdgeDir != localEdgeDir){
-              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
-              localBFluxVec += adjEdgeBFlux * 0.25; //interpolate all other components to unit cube center
-            }
-            else if(adjEdgeIndex == parEdges[1] or adjEdgeIndex == parEdges[3]){
-              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
-              localBFluxVec += adjEdgeBFlux * 3. / 16.;
-            }
-            else if(adjEdgeIndex == parEdges[2]){
-              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
-              localBFluxVec += adjEdgeBFlux * 1. / 16.;
-            }
-          }
-
-          Eigen::Vector3d localHVec = myHex.getMuCompInvAtDualFace(localEdgeIndex) * localBFluxVec;
-          //now project H onto edge to get scalar, also we average h scalar about all adj hexes
-          double localHScalar = (localEdgeDir.transpose() * localHVec);
-          globalEdgeScalarH += localHScalar;
-        }
-
-        // Critical section to update mH in parallel
-//#pragma omp critical
+//#pragma omp parallel for shared(edges, cubes)
+//    for (size_t i = 0; i < edges.size(); ++i) {
+//      auto &myEdge = edges[i];
+//      if (myEdge.mBoundaryFlag == 0) {
+//        const auto &adjHex = myEdge.mAdjacentHex;
+//        const auto &edgeIndicesInHex = myEdge.mIndexInHex;
+//        const size_t numAdjHex = adjHex.size();
+//        double circulation = 0;
+//        for (auto h = 0; h < numAdjHex; ++h) {
+//          const size_t myHexIndex = adjHex[h];
+//          const size_t localEdgeIndex = edgeIndicesInHex[h];
+//          UnitCube &myHex = cubes[myHexIndex];
+//          auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
+//          auto facesAdjToEdge = myHex.facesAdjacentToEdge(localEdgeIndex);
+//          auto faceOrientations = myHex.facesOrientationToEdge(localEdgeIndex);
+//          for (auto f = 0; f < facesAdjToEdge.size(); ++f) {
+//            size_t faceIndex = facesAdjToEdge[f];
+//            int faceOri = faceOrientations[f];
+//            double e = myHex.mE[faceIndex];
+//            double eDotDl = e * 0.5 * faceOri;
+//            circulation += eDotDl;
+//          }
+//        }
+//        // Critical section to update mBFlux in parallel
+////#pragma omp critical
 //        {
 //#pragma omp atomic
-          myEdge.mH = globalEdgeScalarH / numAdjHex;
+//          myEdge.mBFlux += -dt * 4.*circulation / numAdjHex;
 //        }
-      }
-      else {
-        myEdge.mH = 0;
-      }
-    }
+//      }
+//    }
+//    /*
+//    for (auto &myEdge: edges) {
+//      if(myEdge.mBoundaryFlag == 0) {
+//        const auto &adjHex = myEdge.mAdjacentHex;
+//        const auto &edgeIndicesInHex = myEdge.mIndexInHex;
+//        const size_t numAdjHex = adjHex.size();
+//        double globalEdgeScalarH = 0;
+//        for (auto h = 0; h < numAdjHex; ++h) {
+//          const size_t myHexIndex = adjHex[h];
+//          const size_t localEdgeIndex = edgeIndicesInHex[h];
+//          UnitCube &myHex = cubes[myHexIndex];
+//          auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
+//          Eigen::Vector3d localBFluxVec = localEdgeDir * myEdge.mBFlux * 9. / 16.;
+//          auto parEdges = localParallelEdgeCounterClockwise(localEdgeIndex);
+//          for(auto adjEdgeIndex = 0; adjEdgeIndex < 12; ++adjEdgeIndex){
+//            size_t globalAdjEdgeIndex = myHex.mGlobalEdges[adjEdgeIndex];
+//            UnitEdge &adjEdge = edges[globalAdjEdgeIndex];
+//            Eigen::Vector3d adjEdgeDir = myHex.edgeTangential(adjEdgeIndex);
+//            //if the other edge is not in the same direction, then add it;
+//            if(adjEdgeDir != localEdgeDir){
+//              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+//              localBFluxVec += adjEdgeBFlux * 0.25; //interpolate all other components to unit cube center
+//            }
+//            else if(adjEdgeIndex == parEdges[1] or adjEdgeIndex == parEdges[3]){
+//              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+//              localBFluxVec += adjEdgeBFlux * 3. / 16.;
+//            }
+//            else if(adjEdgeIndex == parEdges[2]){
+//              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+//              localBFluxVec += adjEdgeBFlux * 1. / 16.;
+//            }
+//          }
+//          Eigen::Vector3d localHVec = myHex.getMuCompInvAtDualFace(localEdgeIndex) * localBFluxVec;
+//          //now project H onto edge to get scalar, also we average h scalar about all adj hexes
+//          double localHScalar = (localEdgeDir.transpose() * localHVec);
+//          globalEdgeScalarH += localHScalar;
+//        }
+//        myEdge.mH = globalEdgeScalarH / numAdjHex;
+//      }
+//      else{
+//        myEdge.mH = 0;
+//      }
+//    }*/
+//    //Parallel H-Update
+//#pragma omp parallel for shared(edges, cubes)
+//    for (size_t i = 0; i < edges.size(); ++i) {
+//      auto &myEdge = edges[i];
+//      if (myEdge.mBoundaryFlag == 0) {
+//        const auto &adjHex = myEdge.mAdjacentHex;
+//        const auto &edgeIndicesInHex = myEdge.mIndexInHex;
+//        const size_t numAdjHex = adjHex.size();
+//        double globalEdgeScalarH = 0;
+//
+//        for (auto h = 0; h < numAdjHex; ++h) {
+//          const size_t myHexIndex = adjHex[h];
+//          const size_t localEdgeIndex = edgeIndicesInHex[h];
+//          UnitCube &myHex = cubes[myHexIndex];
+//          auto localEdgeDir = myHex.edgeTangential(localEdgeIndex);
+//          Eigen::Vector3d localBFluxVec = localEdgeDir * myEdge.mBFlux * 9. / 16.;
+//          auto parEdges = localParallelEdgeCounterClockwise(localEdgeIndex);
+//
+////#pragma omp simd reduction(+: localBFluxVec, globalEdgeScalarH)
+//          for(auto adjEdgeIndex = 0; adjEdgeIndex < 12; ++adjEdgeIndex){
+//            size_t globalAdjEdgeIndex = myHex.mGlobalEdges[adjEdgeIndex];
+//            UnitEdge &adjEdge = edges[globalAdjEdgeIndex];
+//            Eigen::Vector3d adjEdgeDir = myHex.edgeTangential(adjEdgeIndex);
+//
+//            if(adjEdgeDir != localEdgeDir){
+//              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+//              localBFluxVec += adjEdgeBFlux * 0.25; //interpolate all other components to unit cube center
+//            }
+//            else if(adjEdgeIndex == parEdges[1] or adjEdgeIndex == parEdges[3]){
+//              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+//              localBFluxVec += adjEdgeBFlux * 3. / 16.;
+//            }
+//            else if(adjEdgeIndex == parEdges[2]){
+//              Eigen::Vector3d adjEdgeBFlux = myHex.edgeTangential(adjEdgeIndex) * edges[globalAdjEdgeIndex].mBFlux;
+//              localBFluxVec += adjEdgeBFlux * 1. / 16.;
+//            }
+//          }
+//
+//          Eigen::Vector3d localHVec = myHex.getMuCompInvAtDualFace(localEdgeIndex) * localBFluxVec;
+//          //now project H onto edge to get scalar, also we average h scalar about all adj hexes
+//          double localHScalar = (localEdgeDir.transpose() * localHVec);
+//          globalEdgeScalarH += localHScalar;
+//        }
+//
+//        // Critical section to update mH in parallel
+////#pragma omp critical
+////        {
+////#pragma omp atomic
+//          myEdge.mH = globalEdgeScalarH / numAdjHex;
+////        }
+//      }
+//      else {
+//        myEdge.mH = 0;
+//      }
+//    }
 
 
-/*
 //        H-Update-Working
     double hL2 = 0;
     double hL2Total = 0;
@@ -2752,12 +2747,11 @@ int main() {
         myEdge.mH = 0;
       }
     }
-    */
     t += 0.5 * dt;
-//    probe(timeStep,0) = t;
-//    probe(timeStep,1) = hLInf;
-//    L2ErrorTime(timeStep,0) = t;
-//    L2ErrorTime(timeStep,1) = sqrt(hL2/hL2Total);
+    probe(timeStep,0) = t;
+    probe(timeStep,1) = hLInf;
+    L2ErrorTime(timeStep,0) = t;
+    L2ErrorTime(timeStep,1) = sqrt(hL2/hL2Total);
   }
   plotHexFields(nodeCoords, edges, cubes, "DFields1.vtk");
   plotHexBHFields(nodeCoords, edges, cubes, "HFields1.vtk");
