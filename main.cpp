@@ -15,6 +15,7 @@
 #include <cmath>
 //#include <unsupported/Eigen/SpecialFunctions>
 //#include <omp.h>
+#include <chrono>
 
 using Edge = std::array<size_t, 2>;
 using Hex = std::array<size_t, 8>;
@@ -1731,7 +1732,9 @@ std::string subDividePerturbedMesh(const int numSubDivs, std::string fileName){
   return outFileName;
 }
 
-int main() {
+
+//returns [dx, L2 Error H, L2 Error D, LInf Error H, LInf Error D, runtime]
+std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   namespace mesh = gmsh::model::mesh;
   namespace geo = gmsh::model::geo;
 //  int numSubDivs = 4;
@@ -1739,7 +1742,7 @@ int main() {
 //  auto fileName = meshUnitCube(5,5);
 //  auto fileName = meshUnitSquare(5, 1.);
 //  auto cylFileName = meshUnitCircle(5);
-  auto fileName = meshUnitCircle(10,0);
+  auto fileName = meshUnitCircle(numElems, numSubDiv);
 
   gmsh::initialize();
   gmsh::open(fileName);
@@ -1814,6 +1817,7 @@ int main() {
   std::vector<int> globalOrientation(numEdges, 0);
 //  orientEdges(10,1,2,-1,edge2hex,hex2edge,edge2node,hex2node,globalOrientation,localOrientation);
 //  orientEdges(20,1,2,-1,edge2hex,hex2edge,edge2node,hex2node,globalOrientation,localOrientation);
+  auto startOrient = std::chrono::high_resolution_clock::now();
   int permutationSigma = -1;
   for(auto i =0; i< numHex; ++i){
     std::array<size_t,12> myEdges = hex2edge[i];
@@ -1826,6 +1830,8 @@ int main() {
 //                  localOrientation);
     }
   }
+  auto stopOrient = std::chrono::high_resolution_clock::now();
+  auto runtimeOrient = std::chrono::duration_cast<std::chrono::milliseconds>(stopOrient - startOrient).count();
 //
 //  for(auto i = 0; i < numEdges; ++i){
 //    const auto myNode = edge2node[i];
@@ -2461,6 +2467,7 @@ int main() {
   Eigen::MatrixXd L2ErrorTime(numSteps,2);
 
   //FDTD Update Loop
+  auto startFDTD = std::chrono::high_resolution_clock::now();
   for(int timeStep = 0; timeStep < numSteps; ++timeStep) {
     //D-Update
     for(auto &myCube : cubes){
@@ -2816,6 +2823,8 @@ int main() {
 //    L2ErrorTime(timeStep,0) = t;
 //    L2ErrorTime(timeStep,1) = sqrt(hL2/hL2Total);
   }
+  auto stopFDTD = std::chrono::high_resolution_clock::now();
+  auto runtimeFDTD = std::chrono::duration_cast<std::chrono::milliseconds>(stopFDTD - startFDTD).count();
   plotHexFields(nodeCoords, edges, cubes, "DFields1.vtk");
   plotHexBHFields(nodeCoords, edges, cubes, "HFields1.vtk");
 //  plotEdgeFields(nodeCoords, edges, cubes, "HFields1.vtk");
@@ -2829,7 +2838,6 @@ int main() {
     size_t e = myEdge.mIndexInHex[0];
     UnitCube &myCube = cubes[adjHex];
 //    auto adjToBound = std::accumulate(myCube.mFaceBoundaryFlag.begin(), myCube.mFaceBoundaryFlag.end(),0);
-//    if(myEdge.mBoundaryFlag == 0 && adjToBound<1) {
     if(myEdge.mBoundaryFlag == 0) {
       auto physicalEdgeCoord = myCube.edgePhysicalCoord(e);
 //      auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0Zero(physicalEdgeCoord, t);
@@ -2873,6 +2881,11 @@ int main() {
       }
     }
   }
+  const double relL2H = sqrt(runningL2Error / runningL2Exact);
+  const double relLInfH = runningMaxError / runningMaxExact;
+  const double relL2D = sqrt(runningL2ErrorD / runningL2ExactD);
+  const double relLInfD = runningMaxErrorD / runningMaxExactD;
+
   std::cout << "H, D: abs lInf error = " << runningMaxError << ","
             << runningMaxErrorD << ", maxH, maxD = " << runningMaxExact  << ", " << runningMaxExactD << '\n';
   std::cout << "H, D: rel lInf error = " << runningMaxError / runningMaxExact << ","
@@ -2953,18 +2966,26 @@ int main() {
   fVtk << "POINTS " << 1 << " double\n\n";
   fVtk << edges[maxErrorEdge].physicalCoordinate().transpose() << std::endl;
   fVtk.close();
+  double totalRuntime = static_cast<double>(runtimeFDTD + runtimeOrient);
+  return {avgEdgeLength, relL2H, relL2D, relLInfH, relLInfD, totalRuntime};
+}
 
-//  for(auto &edge : edges){
-//    auto numAdjHex = edge.mAdjacentHex.size();
-//    std::cout << "\nedge=" << edge.mIndex <<",diffs=";
-//    for(auto h = 0; h < numAdjHex; ++h){
-//      const size_t hexIndex = edge.mAdjacentHex[h];
-//      const size_t localEdgeIndex = edge.mIndexInHex[h];
-//      UnitCube &adjHex = cubes[hexIndex];
-//      auto localEdge = adjHex.edgeTangential(localEdgeIndex);
-//      auto edgeJac = adjHex.edgeJacobian(localEdgeIndex);
-//      auto globalEdge = edgeJac * localEdge;
-//      std::cout << (edge.asVector()-globalEdge).transpose() << ", ";
-//    }
-//  }
+std::string convergenceStudy(const int initNumCells, const int maxNumSubDivs){
+  std::string problemType = "cyl";
+  std::string studyFileName = "study_" + problemType + std::to_string(initNumCells) +
+      "initCells_" + std::to_string(maxNumSubDivs) + "subDivs.csv";
+  std::ofstream studyStream;
+  studyStream.open(studyFileName);
+  studyStream << "dx,L2_Error_H,L2_Error_D,LInf_Error_H,LInf_Error_D,runtime\n";
+  for(auto i = 0; i <= maxNumSubDivs; ++i){
+    auto [dx, l2h, l2d, linfh, linfd, runtime] = runProblem(initNumCells, i);
+    studyStream << dx << ',' << l2h << ',' << l2d << ',' << linfh << ',' << linfd << ',' << runtime << '\n';
+  }
+  studyStream.close();
+  return studyFileName;
+}
+
+int main(){
+  convergenceStudy(10, 3);
+  return 0;
 }
