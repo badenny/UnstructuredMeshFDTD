@@ -696,7 +696,8 @@ public:
   }
 
   Eigen::Matrix3d getEpsCompInv(size_t faceIndex){
-    auto jac = circulationLocationJacobian(faceIndex);
+//    auto jac = circulationLocationJacobian(faceIndex);
+    auto jac = jacobian({.5,.5,.5});
     auto epsInv = jac.transpose() * mEpsPhysical.inverse() * jac / jac.determinant();
     return epsInv;
   }
@@ -775,6 +776,7 @@ public:
   Eigen::Vector3d getDVectorAtCirculationLocation(int faceIndex){
     int dir = faceIndex % 3;
     double dScale = getDAtCirculationLocation(faceIndex);
+//    double dScale = mD[faceIndex]; //trying dScale at face location
     auto dVecCirc = getDAtCenter();
     dVecCirc[dir] = dScale;
     return dVecCirc;
@@ -2252,16 +2254,19 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
                                                          0.25*localEdgeDir.transpose() *
                                                          localMu * adjEdgeDir));
         }
+          //trying to use only edge value
+//        else{
+//          muTripletList.push_back(Eigen::Triplet<double>(myIntEdgeIndex, myIntEdgeIndex,
+//                                                         1.*localEdgeDir.transpose()
+//                                                         * localMu * localEdgeDir));
+//        }
+
         else if(adjEdgeIndex == parEdges[1] or adjEdgeIndex == parEdges[3]){
-//          globalMu(myIntEdgeIndex,adjIntEdgeIndex) += 3. / 16. * localEdgeDir.transpose() *
-//                                         localMu * adjEdgeDir;
             muTripletList.push_back(Eigen::Triplet<double>(myIntEdgeIndex, adjIntEdgeIndex,
                                                            3./16.*localEdgeDir.transpose() *
                                                            localMu * adjEdgeDir));
         }
         else if(adjEdgeIndex == parEdges[2]){
-//          globalMu(myIntEdgeIndex,adjIntEdgeIndex) += 1. / 16. * localEdgeDir.transpose() *
-//                                                     localMu * adjEdgeDir;
           muTripletList.push_back(Eigen::Triplet<double>(myIntEdgeIndex, adjIntEdgeIndex,
                                                          1./16.*localEdgeDir.transpose() *
                                                          localMu * adjEdgeDir));
@@ -2271,6 +2276,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
                                                          9./16.*localEdgeDir.transpose()
                                                          * localMu * localEdgeDir));
         }
+
       }
     }
   }
@@ -2278,7 +2284,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   spGlobalMu.makeCompressed();
   std::cout << "Starting CG declaration\n";
   Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cgHFromBSolve;
-  //cgHFromBSolve.setTolerance(1e-14);
+//  cgHFromBSolve.setTolerance(1e-20);
   std::cout << "starting CG compute\n";
   cgHFromBSolve.compute(spGlobalMu);
 //  std::cout << spGlobalMu << '\n';
@@ -2300,12 +2306,44 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 //    subDividePerturbedMesh(nsd, "UnitSquarePerturbed5.vtk");
 //  }
 //  subDividePerturbedMesh(4, "UnitSquarePerturbed5.vtk");
-  const double dt = 0.75 * minEdgeLength / sqrt(3);
+  const double dt = .5 * minEdgeLength / sqrt(3);
 //  const double dt = .1;
   std::cout << "dt=" << dt <<std::endl;
 
-  //Exact TE_1,0,1 solution cylindrical cavity
+  //Exact TM_1,1,1 solution cylindrical cavity
+//  auto exactSolH0ZeroCyl_TM111 = [](Eigen::Vector3d x, double t) {
   auto exactSolH0ZeroCyl = [](Eigen::Vector3d x, double t) {
+    double epsDielectric = 1.;
+    double r = sqrt(x[0]*x[0] + x[1]*x[1]);
+    double phi = atan2(x[1],x[0]);
+    double z = x[2];
+    double kz = M_PI;
+    double kr = 1.84118378;
+    double k = sqrt(kz*kz + kr*kr);
+    double w = k / (epsDielectric);
+    double j1_r = (r < 1e-8) ? .5 : j1(kr*r) / r;  // j1(kr*r)/r is undefined at r=0, but limit is .5
+    double j1Prime = .5 * (j0(kr * r) - jn(2, kr * r)); //recurrence relation gives this see wiki article
+
+    Eigen::Vector3d DCyl {-kr * kz / (w * epsDielectric) * j1Prime * cos(phi) * cos(kz*z),
+                          kz / (w * epsDielectric) * j1_r * sin(phi) * cos(kz*z),
+                          -kr*kr / (w*epsDielectric) * j1(kr*r) * cos(phi) * sin(kz*z)};
+    DCyl = DCyl * cos(w * t);
+
+    Eigen::Vector3d HCyl {-j1_r * sin(phi) * sin(kz*z),
+                          -kr * j1Prime * cos(phi) * sin(kz*z),
+                          0};
+    HCyl = HCyl * sin(w * t);
+
+    Eigen::Matrix3d cylToRect {{cos(phi), -sin(phi), 0},
+                               {sin(phi), cos(phi), 0},
+                               {0, 0, 1}};
+    Eigen::Vector3d HBar = cylToRect * HCyl;
+    Eigen::Vector3d DBar = cylToRect * DCyl;
+    return std::array<Eigen::Vector3d, 4> {HBar, HBar, DBar, DBar};
+  };
+
+  //Exact TE_1,0,1 solution cylindrical cavity
+  auto exactSolH0ZeroCyl_TE101 = [](Eigen::Vector3d x, double t) {
     double r = sqrt(x[0]*x[0] + x[1]*x[1]);
     double phi = atan2(x[1],x[0]);
     double z = x[2];
@@ -2434,15 +2472,15 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
       if (myCube.mFaceBoundaryFlag[f] == 0) {
         auto faceCoord = myCube.facePhysicalCoordinate(f);
 //        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0Zero(faceCoord, -0.5 * dt);
-      auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0ZeroCyl(faceCoord, -0.5 * dt);
+        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0ZeroCyl(faceCoord, -0.5 * dt);
         Eigen::Vector3d areaWeightedNormal = myCube.physicalFaceAreaWeighted(f);
         myCube.mD[f] = dBarVec.transpose() * areaWeightedNormal;
       }
     }
     for(int f = 0; f < 6; ++f) {
       if (myCube.mFaceBoundaryFlag[f] == 0) {
-        auto dVec = myCube.faceNormal(f) * myCube.mD[f];
-//        auto dVec = myCube.getDVectorAtCirculationLocation(f);
+//        auto dVec = myCube.faceNormal(f) * myCube.mD[f];
+        auto dVec = myCube.getDVectorAtCirculationLocation(f);
         auto epsInv = myCube.getEpsCompInv(f);
 //        auto epsInv = myCube.mEpsCompInv;
         myCube.mE[f] = myCube.faceNormal(f).transpose() * epsInv * dVec;
@@ -2458,17 +2496,22 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   double tMax = 5.75 * M_PI / omega;
 //  double tMax = 100.75 * M_PI / omega;
   const int numSteps = static_cast<int>(tMax / dt);
+//  const int numSteps = 1000;
 //  const int numSteps = 1;
   double t = 0;
 
-  const size_t maxErrorEdgeIndex =  17904;//126996;
+  const size_t maxErrorEdgeIndex =  194;//126996;
 //  Eigen::VectorXd probe(numSteps);
   Eigen::MatrixXd probe(numSteps,2);
   Eigen::MatrixXd L2ErrorTime(numSteps,2);
 
+  Eigen::VectorXd energyArray(numSteps);
+  //std::vector<double> energyArray(numSteps, 0.);
+
   //FDTD Update Loop
   auto startFDTD = std::chrono::high_resolution_clock::now();
   for(int timeStep = 0; timeStep < numSteps; ++timeStep) {
+    double energy = 0;
     //D-Update
     for(auto &myCube : cubes){
       //update D on each face
@@ -2501,6 +2544,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
         else{
           myCube.mE[f] = 0;
         }
+//        energy += .25 * myCube.mD[f] * myCube.mD[f] / pow(myCube.physicalFaceArea(f),2); //every face gets counted twice, so we div by 4 instead of 2
       }
     }
     //Parallel D-Update and  E-Update
@@ -2714,6 +2758,8 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
       UnitEdge &myEdge = edges[edgeIndex]; //get interior edge index as global edge
       auto myIntEdgeIndex = interiorEdgesMap[edgeIndex];
       myEdge.mH = hInt(myIntEdgeIndex);
+//      energy = cgHFromBSolve.error();
+//      energy += myEdge.mH * myEdge.mBFlux * .5 / (myEdge.length());
     }
 //    for (auto &myEdge: edges) {
 //      if(myEdge.mBoundaryFlag == 0) {
@@ -2818,6 +2864,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 //      }
 //    }
     t += 0.5 * dt;
+//    energyArray(timeStep) = edges[maxErrorEdgeIndex].mH;
 //    probe(timeStep,0) = t;
 //    probe(timeStep,1) = hLInf;
 //    L2ErrorTime(timeStep,0) = t;
@@ -2918,6 +2965,11 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   fl2 << L2ErrorTime;
   fl2.close();
 
+  //write energy to file
+  std::ofstream fEnergy;
+  fEnergy.open("energy.txt");
+  fEnergy << energyArray;
+  fEnergy.close();
   //plot boundary faces
   std::stringstream myBoundFaces;
   size_t numBoundaryFaces = 0;
@@ -2972,20 +3024,25 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 
 std::string convergenceStudy(const int initNumCells, const int maxNumSubDivs){
   std::string problemType = "cyl";
-  std::string studyFileName = "study_" + problemType + std::to_string(initNumCells) +
-      "initCells_" + std::to_string(maxNumSubDivs) + "subDivs.csv";
+  std::string studyFileName = "study_" + problemType + "_" + std::to_string(initNumCells) +
+      "_initCells_" + std::to_string(maxNumSubDivs) + "subDivs.csv";
   std::ofstream studyStream;
+  std::stringstream studyStringStream;
   studyStream.open(studyFileName);
   studyStream << "dx,L2_Error_H,L2_Error_D,LInf_Error_H,LInf_Error_D,runtime\n";
+  studyStringStream << "dx,L2_Error_H,L2_Error_D,LInf_Error_H,LInf_Error_D,runtime\n";
   for(auto i = 0; i <= maxNumSubDivs; ++i){
     auto [dx, l2h, l2d, linfh, linfd, runtime] = runProblem(initNumCells, i);
     studyStream << dx << ',' << l2h << ',' << l2d << ',' << linfh << ',' << linfd << ',' << runtime << '\n';
+    studyStringStream << dx << ',' << l2h << ',' << l2d << ',' << linfh << ',' << linfd << ',' << runtime << '\n';
+    std::cout << studyStringStream.str() << '\n';
   }
   studyStream.close();
   return studyFileName;
 }
 
 int main(){
-  convergenceStudy(10, 3);
+  std::string convergenceStudyFile = convergenceStudy(10, 3);
+  std::cout << "Convergence study file name: " << convergenceStudyFile << std::endl;
   return 0;
 }
