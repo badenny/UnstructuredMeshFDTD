@@ -237,12 +237,16 @@ std::string meshUnitCircle(const int n, const int numSubDivs){
 //  const std::vector<int> & numElements {n+5};
   const std::vector<double> & heights {1};
   extrude({std::pair<int,int>{2, surface}}, 0, 0, 1, extrusion, numElements, heights, true);
+//  extrude({std::pair<int,int>{2, surface}}, 0, 0, 1, extrusion); //for tet to hex mesh
 //  gmsh::option::setNumber("Mesh.RecombinationAlgorithm", 3); // or 3
   synchronize();
   gmsh::model::mesh::generate(2);
   gmsh::model::mesh::recombine();
   //std::string meshFormat{".vtk"};
   gmsh::model::mesh::generate(3);
+  gmsh::option::setNumber("Mesh.SubdivisionAlgorithm", 2); //use 1 to force quads, use 2 to force hexahedra
+  gmsh::model::mesh::recombine();
+//  gmsh::model::mesh::refine();
 
   gmsh::option::setNumber("Mesh.SubdivisionAlgorithm", 2); //use 1 to force quads, use 2 to force hexahedra
 //  size_t numSubDivs = 0;
@@ -252,7 +256,8 @@ std::string meshUnitCircle(const int n, const int numSubDivs){
   }
 
   std::string meshFormat{".msh"};
-  auto fileName = "UnitCircle" + std::to_string(n) + meshFormat;
+//  auto fileName = "UnitCircle" + std::to_string(n) + meshFormat;
+  auto fileName = "UnitCircleInit" + std::to_string(n) +"SubDiv" + std::to_string(numSubDivs) + meshFormat;
   //gmsh::write("UnitSquare" + std::to_string(n) + ".msh");
   gmsh::write(fileName);
   gmsh::finalize();
@@ -2496,7 +2501,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   double tMax = 5.75 * M_PI / omega;
 //  double tMax = 100.75 * M_PI / omega;
   const int numSteps = static_cast<int>(tMax / dt);
-//  const int numSteps = 1000;
+//  const int numSteps = 10000;
 //  const int numSteps = 1;
   double t = 0;
 
@@ -2545,6 +2550,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
           myCube.mE[f] = 0;
         }
 //        energy += .25 * myCube.mD[f] * myCube.mD[f] / pow(myCube.physicalFaceArea(f),2); //every face gets counted twice, so we div by 4 instead of 2
+        energy += myCube.mD[f] * myCube.mE[f];
       }
     }
     //Parallel D-Update and  E-Update
@@ -2759,7 +2765,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
       auto myIntEdgeIndex = interiorEdgesMap[edgeIndex];
       myEdge.mH = hInt(myIntEdgeIndex);
 //      energy = cgHFromBSolve.error();
-//      energy += myEdge.mH * myEdge.mBFlux * .5 / (myEdge.length());
+      energy += myEdge.mH * myEdge.mBFlux;
     }
 //    for (auto &myEdge: edges) {
 //      if(myEdge.mBoundaryFlag == 0) {
@@ -2864,7 +2870,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 //      }
 //    }
     t += 0.5 * dt;
-//    energyArray(timeStep) = edges[maxErrorEdgeIndex].mH;
+    energyArray(timeStep) = energy;
 //    probe(timeStep,0) = t;
 //    probe(timeStep,1) = hLInf;
 //    L2ErrorTime(timeStep,0) = t;
@@ -2967,7 +2973,7 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 
   //write energy to file
   std::ofstream fEnergy;
-  fEnergy.open("energy.txt");
+  fEnergy.open("energyN" + std::to_string(numElems) + "Divs" + std::to_string(numSubDiv) + ".txt");
   fEnergy << energyArray;
   fEnergy.close();
   //plot boundary faces
@@ -3042,7 +3048,7 @@ std::string convergenceStudy(const int initNumCells, const int maxNumSubDivs){
 }
 
 int main(){
-  std::string convergenceStudyFile = convergenceStudy(10, 3);
+  std::string convergenceStudyFile = convergenceStudy(5, 2);
   std::cout << "Convergence study file name: " << convergenceStudyFile << std::endl;
   return 0;
 }
