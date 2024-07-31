@@ -2343,8 +2343,8 @@ std::array<double, 7> runProblem(int numElems, int numSubDiv) {
   spGlobalMu.setFromTriplets(muTripletList.begin(), muTripletList.end());
   spGlobalMu.makeCompressed();
   std::cout << "Starting CG declaration\n";
-//  Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cgHFromBSolve;
-  Eigen::BiCGSTAB<Eigen::SparseMatrix<double>> cgHFromBSolve;
+  Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cgHFromBSolve;
+//  Eigen::BiCGSTAB<Eigen::SparseMatrix<double>> cgHFromBSolve;
 //  cgHFromBSolve.setTolerance(1e-20);
   std::cout << "starting CG compute\n";
   //setting max iter for CG Solve
