@@ -120,7 +120,8 @@ std::string meshUnitCube(const int n, const int numSubDivs) {
   //std::string meshFormat{".vtk"};
   std::string meshFormat{".msh"};
   //std::string meshFormat{".m"};
-  auto fileName = "UnitCubeUnstructured" + std::to_string(n) + meshFormat;
+  auto fileName = "UnitCubeUnstructured" + std::to_string(n) +"SubDiv" + std::to_string(numSubDivs) + meshFormat;
+//  auto fileName = "UnitCubeUnstructured" + std::to_string(n) + meshFormat;
   //auto fileName = "UnitSquareStructured" + std::to_string(n) + meshFormat;
   //gmsh::write("UnitSquare" + std::to_string(n) + ".msh");
   gmsh::write(fileName);
@@ -192,8 +193,9 @@ std::string meshUnitSquare(const int n, const double sideLength) {
   std::string meshFormat{".msh"};
   //std::string meshFormat{".m"};
 
-  auto fileName = "UnitSquareUnstructured" + std::to_string(n) + meshFormat;
-  //auto fileName = "UnitSquareStructured" + std::to_string(n) + meshFormat;
+//  auto fileName = "UnitSquareUnstructured" + std::to_string(n) + meshFormat;
+  auto fileName = "UnitSquareStructured" + std::to_string(n) + meshFormat;
+//  auto fileName = "UnitSquareUnstructured" + std::to_string(n) +"SubDiv" + std::to_string(numSubDivs) + meshFormat;
   //gmsh::write("UnitSquare" + std::to_string(n) + ".msh");
   gmsh::write(fileName);
   //gmsh::write("UnitSquareStructured" + std::to_string(n) + ".m");
@@ -258,6 +260,67 @@ std::string meshUnitCircle(const int n, const int numSubDivs){
   std::string meshFormat{".msh"};
 //  auto fileName = "UnitCircle" + std::to_string(n) + meshFormat;
   auto fileName = "UnitCircleInit" + std::to_string(n) +"SubDiv" + std::to_string(numSubDivs) + meshFormat;
+  //gmsh::write("UnitSquare" + std::to_string(n) + ".msh");
+  gmsh::write(fileName);
+  gmsh::finalize();
+  return fileName;
+}
+
+std::string meshUnitCircleTet(const int n, const int numSubDivs){
+  const double dx = 2.0 / n;
+  const double radius = 1.0;
+  using namespace gmsh::model::geo;
+  using DArray = std::array<double, 2>;
+
+  gmsh::initialize();
+  const std::array<DArray, 4> circlePoints{DArray{0., -1}, DArray{1, 0},
+                                           DArray{0, 1}, DArray{-1, 0}};
+  const int center = addPoint(0., 0., 0., dx);
+  std::vector<int> circlePointArray;
+  //add points into gmsh
+  for(const auto &point : circlePoints){
+    circlePointArray.push_back(addPoint(point[0], point[1], 0., dx));
+  }
+  //add circle quarter arcs to gmsh
+  std::vector<int> circleArcArray;
+  for(int i = 0; i < circlePoints.size(); ++i){
+    const auto next = (i + 1) % 4;
+    circleArcArray.push_back(addCircleArc(circlePointArray[i], center, circlePointArray[next]));
+  }
+  //merge arcs into loop, then loop into plane-surface
+  const std::vector<int> loop {addCurveLoop(circleArcArray)};
+  const int surface = addPlaneSurface(loop);
+  synchronize();
+  gmsh::model::mesh::generate(2);
+  gmsh::model::mesh::recombine();
+  synchronize();
+
+  std::vector<std::pair<int, int> > extrusion;
+  const std::vector<int> & numElements {n+1};
+//  const std::vector<int> & numElements {n+5};
+  const std::vector<double> & heights {1};
+//  extrude({std::pair<int,int>{2, surface}}, 0, 0, 1, extrusion, numElements, heights, true);
+  extrude({std::pair<int,int>{2, surface}}, 0, 0, 1, extrusion); //for tet to hex mesh
+//  gmsh::option::setNumber("Mesh.RecombinationAlgorithm", 3); // or 3
+  synchronize();
+//  gmsh::model::mesh::generate(2);
+//  gmsh::model::mesh::recombine();
+  //std::string meshFormat{".vtk"};
+  gmsh::model::mesh::generate(3);
+  gmsh::option::setNumber("Mesh.SubdivisionAlgorithm", 2); //use 1 to force quads, use 2 to force hexahedra
+//  gmsh::model::mesh::recombine();
+  gmsh::model::mesh::refine();
+
+//  gmsh::option::setNumber("Mesh.SubdivisionAlgorithm", 2); //use 1 to force quads, use 2 to force hexahedra
+//  size_t numSubDivs = 0;
+  for(auto s = 0; s < numSubDivs; ++s){
+    synchronize();
+    gmsh::model::mesh::refine();
+  }
+
+  std::string meshFormat{".msh"};
+//  auto fileName = "UnitCircle" + std::to_string(n) + meshFormat;
+  auto fileName = "TetUnitCircleInit" + std::to_string(n) +"SubDiv" + std::to_string(numSubDivs) + meshFormat;
   //gmsh::write("UnitSquare" + std::to_string(n) + ".msh");
   gmsh::write(fileName);
   gmsh::finalize();
@@ -1134,8 +1197,6 @@ void orientEdges(const size_t globalEdgeIndex, const size_t localEdgeIndex, cons
                  std::vector<int> &globalOrientation, std::vector<std::array<int, 12>> &localOrientation) {
   const auto globalOri = globalOrientation[globalEdgeIndex];
   const auto localOri = localOrientation[hexIndex][localEdgeIndex];
-  //std::cout << "edge=(" << edge2node[globalEdgeIndex][0] << "," << edge2node[globalEdgeIndex][1]
-  //          <<  ") local=" << localOri << ", global=" << globalOri << '\n';
   int newDesiredOrientation = 0;
   //Edge is already oriented globally and locally
   if(globalOri != 0 && localOri !=0)
@@ -1144,14 +1205,10 @@ void orientEdges(const size_t globalEdgeIndex, const size_t localEdgeIndex, cons
   else if(globalOri != 0 && localOri == 0){
     const auto [localNode0, localNode1] = edgeIndexToNodeIndex(localEdgeIndex);
     std::array<size_t, 2> globalEdgeNodes = {hex2node[hexIndex][localNode0], hex2node[hexIndex][localNode1]};
-    //check global orientation against local
-//    const auto [globalNode0, globalNode1] = edge2node[globalEdgeIndex];
-    //if the local orientation were positive, this is the relative orientation.
-//    int initialRelativeSigma = (globalNode0 < globalNode1) ? 1 : -1;
     //if the local orientation aligned with the global, this is the relative orientation.
     int initialLocalSigma = localEdgeDirection(localEdgeIndex);
     int initialRelativeSigma = (globalEdgeNodes[0] < globalEdgeNodes[1]) ? 1 : -1;
-    //correct this by the global ori found in previous hex
+    //correct this orientation by the global ori found in previous hex
     int relativeSigma = initialLocalSigma * globalOri * initialRelativeSigma;
     newDesiredOrientation = relativeSigma;
     //make local edge point in same direction as global edge.
@@ -1162,12 +1219,9 @@ void orientEdges(const size_t globalEdgeIndex, const size_t localEdgeIndex, cons
     //set local orientation to desired orientation
     localOrientation[hexIndex][localEdgeIndex] = desiredOrientation;
     //check global orientation against local
-    //const auto [globalNode0, globalNode1] = edge2node[globalEdgeIndex];
     const auto [localNode0, localNode1] = edgeIndexToNodeIndex(localEdgeIndex);
 
     std::array<size_t, 2> globalEdgeNodes = {hex2node[hexIndex][localNode0], hex2node[hexIndex][localNode1]};
-//    std::cout <<  localNode0 << "," << localNode1 << ": ";
-//    std::cout <<  globalEdgeNodes[0]-1 << "," << globalEdgeNodes[1]-1 << "\n";
     int initialLocalSigma = localEdgeDirection(localEdgeIndex);
     //if the local orientation were positive and low to high local index, this is the relative orientation.
     int initialRelativeSigma = (globalEdgeNodes[0] < globalEdgeNodes[1]) ? 1 : -1;
@@ -1741,15 +1795,16 @@ std::string subDividePerturbedMesh(const int numSubDivs, std::string fileName){
 
 
 //returns [dx, L2 Error H, L2 Error D, LInf Error H, LInf Error D, runtime]
-std::array<double, 6> runProblem(int numElems, int numSubDiv) {
+std::array<double, 7> runProblem(int numElems, int numSubDiv) {
   namespace mesh = gmsh::model::mesh;
   namespace geo = gmsh::model::geo;
 //  int numSubDivs = 4;
 //  std::string fileName = "UnitCubePerturbed" + std::to_string(numSubDivs) + ".msh";
-//  auto fileName = meshUnitCube(5,5);
 //  auto fileName = meshUnitSquare(5, 1.);
 //  auto cylFileName = meshUnitCircle(5);
-  auto fileName = meshUnitCircle(numElems, numSubDiv);
+//  auto fileName = meshUnitCircle(numElems, numSubDiv);
+//  auto fileName = meshUnitCircleTet(numElems, numSubDiv);
+  auto fileName = meshUnitCube(numElems,numSubDiv);
 
   gmsh::initialize();
   gmsh::open(fileName);
@@ -2288,10 +2343,16 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   spGlobalMu.setFromTriplets(muTripletList.begin(), muTripletList.end());
   spGlobalMu.makeCompressed();
   std::cout << "Starting CG declaration\n";
-  Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cgHFromBSolve;
+//  Eigen::ConjugateGradient<Eigen::SparseMatrix<double>, Eigen::Lower|Eigen::Upper> cgHFromBSolve;
+  Eigen::BiCGSTAB<Eigen::SparseMatrix<double>> cgHFromBSolve;
 //  cgHFromBSolve.setTolerance(1e-20);
   std::cout << "starting CG compute\n";
+  //setting max iter for CG Solve
+//  cgHFromBSolve.setMaxIterations(1e2);
+//  cgHFromBSolve.setTolerance(1e-10);
   cgHFromBSolve.compute(spGlobalMu);
+  std::cout << "CG compute complete\n";
+
 //  std::cout << spGlobalMu << '\n';
 //  Eigen::MatrixXd globalMuInv = globalMu.inverse();
 //  std::cout << globalMuInv << '\n';
@@ -2311,7 +2372,8 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 //    subDividePerturbedMesh(nsd, "UnitSquarePerturbed5.vtk");
 //  }
 //  subDividePerturbedMesh(4, "UnitSquarePerturbed5.vtk");
-  const double dt = .5 * minEdgeLength / sqrt(3);
+//  const double dt = .5 * minEdgeLength / sqrt(3);
+  const double dt = .25 * minEdgeLength / sqrt(3);
 //  const double dt = .1;
   std::cout << "dt=" << dt <<std::endl;
 
@@ -2476,8 +2538,8 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
     for(auto f = 0; f < 6; ++f){
       if (myCube.mFaceBoundaryFlag[f] == 0) {
         auto faceCoord = myCube.facePhysicalCoordinate(f);
-//        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0Zero(faceCoord, -0.5 * dt);
-        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0ZeroCyl(faceCoord, -0.5 * dt);
+        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0Zero(faceCoord, -0.5 * dt);
+//        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0ZeroCyl(faceCoord, -0.5 * dt);
         Eigen::Vector3d areaWeightedNormal = myCube.physicalFaceAreaWeighted(f);
         myCube.mD[f] = dBarVec.transpose() * areaWeightedNormal;
       }
@@ -2495,14 +2557,15 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 
   plotHexFields(nodeCoords, edges, cubes, "DFields0.vtk");
   plotHexBHFields(nodeCoords, edges, cubes, "HFields0.vtk");
-  double omega = M_PI * sqrt(3);
+  double omega = sqrt(pow(1.8412,2) + pow(M_PI,2));
+//  double omega = M_PI * sqrt(3);
 //  double tMax = 1.25 * M_PI / omega;
 //  double tMax = 10.75 * M_PI / omega;
-  double tMax = 5.75 * M_PI / omega;
+  double tMax = 1.75*M_PI / omega;
 //  double tMax = 100.75 * M_PI / omega;
   const int numSteps = static_cast<int>(tMax / dt);
 //  const int numSteps = 10000;
-//  const int numSteps = 1;
+//  const int numSteps = 20;
   double t = 0;
 
   const size_t maxErrorEdgeIndex =  194;//126996;
@@ -2893,8 +2956,8 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 //    auto adjToBound = std::accumulate(myCube.mFaceBoundaryFlag.begin(), myCube.mFaceBoundaryFlag.end(),0);
     if(myEdge.mBoundaryFlag == 0) {
       auto physicalEdgeCoord = myCube.edgePhysicalCoord(e);
-//      auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0Zero(physicalEdgeCoord, t);
-      auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0ZeroCyl(physicalEdgeCoord, t);
+      auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0Zero(physicalEdgeCoord, t);
+//      auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0ZeroCyl(physicalEdgeCoord, t);
       Eigen::Vector3d physicalEdge = myCube.edgeJacobian(e) * myCube.edgeTangential(e);
       double hExactComp = hBarVec.transpose() * physicalEdge; //this is in computational space
       double hExact = hExactComp / physicalEdge.norm(); //this is in physical space
@@ -2921,8 +2984,8 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
       if(myCube.mFaceBoundaryFlag[f]==0) {
         auto faceCoord = myCube.facePhysicalCoordinate(f);
         auto areaWeightedNormal = myCube.physicalFaceAreaWeighted(f);
-//        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0Zero(faceCoord, t - 0.5 * dt);
-        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0ZeroCyl(faceCoord, t - 0.5 * dt);
+        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0Zero(faceCoord, t - 0.5 * dt);
+//        auto [unusedH, unusedB, unusedE, dBarVec] = exactSolH0ZeroCyl(faceCoord, t - 0.5 * dt);
         double exactD = dBarVec.transpose() * areaWeightedNormal;
         exactD = exactD / areaWeightedNormal.norm();
         double diff = abs(myCube.mD[f] / areaWeightedNormal.norm() - exactD);
@@ -2936,7 +2999,12 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   }
   const double relL2H = sqrt(runningL2Error / runningL2Exact);
   const double relLInfH = runningMaxError / runningMaxExact;
-  const double relL2D = sqrt(runningL2ErrorD / runningL2ExactD);
+//  const double relL2D = sqrt(runningL2ErrorD / runningL2ExactD);
+  const double relL2D = sqrt(runningL2ErrorD*pow(avgEdgeLength,3));
+  const double errorD_h3 = sqrt(runningL2ErrorD*pow(avgEdgeLength,3));
+  const double errorH_h3 = sqrt(runningL2Error*pow(avgEdgeLength,3));
+  const double errorU_h3 = sqrt( (runningL2ErrorD + runningL2Error) *pow(avgEdgeLength,3) );
+//  const double relL2D = sqrt(runningL2ErrorD);
   const double relLInfD = runningMaxErrorD / runningMaxExactD;
 
   std::cout << "H, D: abs lInf error = " << runningMaxError << ","
@@ -2952,8 +3020,8 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
 //set H-fields to error and plot
   for(auto &edge : edges){
     auto physicalEdgeCoord = edge.physicalCoordinate();
-//    auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0Zero(physicalEdgeCoord, t-0.5*dt);
-    auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0ZeroCyl(physicalEdgeCoord, t);
+    auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0Zero(physicalEdgeCoord, t-0.5*dt);
+//    auto [hBarVec, unusedB, unusedE, unusedD] = exactSolH0ZeroCyl(physicalEdgeCoord, t);
     //Piola transformation rule or H^T dl = HBar^T dl
     double hExact = hBarVec.transpose() * edge.asUnitVector();
     auto diff = abs(hExact*edge.length()-edge.mH);
@@ -3025,22 +3093,39 @@ std::array<double, 6> runProblem(int numElems, int numSubDiv) {
   fVtk << edges[maxErrorEdge].physicalCoordinate().transpose() << std::endl;
   fVtk.close();
   double totalRuntime = static_cast<double>(runtimeFDTD + runtimeOrient);
-  return {avgEdgeLength, relL2H, relL2D, relLInfH, relLInfD, totalRuntime};
+  const double numEdgesDouble = static_cast<double>(edges.size());
+  const double numHexDouble = static_cast<double>(cubes.size());
+  const double numStepsDouble = static_cast<double>(numSteps);
+  //std::array<double, 7> runProblem(int numElems, int numSubDiv)
+//  return {avgEdgeLength, relL2H, relL2D, relLInfH, relLInfD, totalRuntime, numEdgesDouble};
+  return {avgEdgeLength, errorU_h3, errorD_h3, errorH_h3, numEdgesDouble, numHexDouble, numStepsDouble};
 }
 
 std::string convergenceStudy(const int initNumCells, const int maxNumSubDivs){
-  std::string problemType = "cyl";
+//  std::string problemType = "cyl";
+//std::string problemType = "cyl_tet";
+  std::string problemType = "cube";
   std::string studyFileName = "study_" + problemType + "_" + std::to_string(initNumCells) +
       "_initCells_" + std::to_string(maxNumSubDivs) + "subDivs.csv";
   std::ofstream studyStream;
   std::stringstream studyStringStream;
   studyStream.open(studyFileName);
-  studyStream << "dx,L2_Error_H,L2_Error_D,LInf_Error_H,LInf_Error_D,runtime\n";
-  studyStringStream << "dx,L2_Error_H,L2_Error_D,LInf_Error_H,LInf_Error_D,runtime\n";
+//  studyStream << "dx,L2_Error_H,L2_Error_D,LInf_Error_H,LInf_Error_D,runtime,num_edges\n";
+//  studyStringStream << "dx,L2_Error_H,L2_Error_D,LInf_Error_H,LInf_Error_D,runtime,num_edges\n";
+//  {avgEdgeLength, errorU_h3, errorD_h3, errorH_h3, numEdgesDouble, numHexDouble, numStepsDouble};
+  studyStream << "h,U_L2_Error,Order,D_L2_Error,H_L2_Error,Num_Edges,Num_Hex,stability_check,N_T\n";
+  studyStringStream << "h,U_L2_Error,Order,D_L2_Error,H_L2_Error,Num_Edges,Num_Hex,stability_check,N_T\n";
+  double l2uOld = 1e3;
+
   for(auto i = 0; i <= maxNumSubDivs; ++i){
-    auto [dx, l2h, l2d, linfh, linfd, runtime] = runProblem(initNumCells, i);
-    studyStream << dx << ',' << l2h << ',' << l2d << ',' << linfh << ',' << linfd << ',' << runtime << '\n';
-    studyStringStream << dx << ',' << l2h << ',' << l2d << ',' << linfh << ',' << linfd << ',' << runtime << '\n';
+//    auto [dx, l2h, l2d, linfh, linfd, runtime, numEdges] = runProblem(initNumCells, i);
+//    studyStream << dx << ',' << l2h << ',' << l2d << ',' << linfh << ',' << linfd << ',' << runtime << ',' << numEdges <<'\n';
+//    studyStringStream << dx << ',' << l2h << ',' << l2d << ',' << linfh << ',' << linfd << ',' << runtime << ',' << numEdges <<'\n';
+    auto [h, l2u, l2d, l2h, numEdges, numHex, nt] = runProblem(initNumCells, i);
+    const double myOrder = log(l2uOld / l2u) / log(2.);
+    l2uOld = l2u;
+    studyStream << h << ',' << l2u << ',' << myOrder << ',' << l2d << ',' << l2h << ',' << numEdges << ',' << numHex << ',' << 6*numHex-numEdges<< ',' << nt <<'\n';
+    studyStringStream << h << ',' << l2u << ',' << myOrder << ',' << l2d << ',' << l2h << ',' << numEdges << ',' << numHex << ',' << 6*numHex-numEdges << ','<< nt <<'\n';
     std::cout << studyStringStream.str() << '\n';
   }
   studyStream.close();
@@ -3048,7 +3133,7 @@ std::string convergenceStudy(const int initNumCells, const int maxNumSubDivs){
 }
 
 int main(){
-  std::string convergenceStudyFile = convergenceStudy(5, 2);
+  std::string convergenceStudyFile = convergenceStudy(4, 3);
   std::cout << "Convergence study file name: " << convergenceStudyFile << std::endl;
   return 0;
 }
